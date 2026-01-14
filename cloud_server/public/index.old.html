@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <title>ESP32 E-Paper Cloud Control</title>
+    <link rel='icon' href='data:;base64,='>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .header p { font-size: 1.1em; opacity: 0.9; }
+        .main-content {
+            display: flex;
+            min-height: 600px;
+        }
+        .sidebar {
+            width: 320px;
+            background: #f8f9fa;
+            padding: 25px;
+            border-right: 1px solid #dee2e6;
+        }
+        .content-area {
+            flex: 1;
+            padding: 30px;
+            display: flex;
+            flex-direction: column;
+        }
+        .section-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        .device-selector {
+            margin-bottom: 20px;
+        }
+        .device-selector select, .device-selector input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-top: 8px;
+            transition: all 0.3s;
+        }
+        .device-selector select:focus, .device-selector input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .epd-selector {
+            margin-bottom: 20px;
+        }
+        .epd-selector select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group label {
+            display: block;
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .control-group input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-secondary:hover { background: #5a6268; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-success:hover { background: #218838; }
+        .drop-zone {
+            border: 3px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            background: #f8f9fa;
+            transition: all 0.3s;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #667eea;
+            background: #e7f3ff;
+        }
+        .drop-zone p {
+            color: #666;
+            font-size: 1.1em;
+            margin: 10px 0;
+        }
+        .image-container {
+            flex: 1;
+            display: flex;
+            gap: 20px;
+        }
+        .image-box {
+            flex: 1;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+        }
+        .image-box h3 {
+            margin-bottom: 15px;
+            color: #495057;
+            font-size: 1.1em;
+        }
+        .image-display {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            border-radius: 5px;
+            overflow: auto;
+        }
+        .image-display img, .image-display canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .status-bar {
+            padding: 15px 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #dee2e6;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #495057;
+        }
+        .hidden { display: none; }
+        .processing-options {
+            margin-bottom: 20px;
+        }
+        .processing-options label {
+            display: block;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+        .processing-options input[type="radio"] {
+            margin-right: 8px;
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .online-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #28a745;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📱 ESP32 E-Paper Cloud Control</h1>
+            <p>通过云端MQTT控制墨水屏显示</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="section-title">设备设置</div>
+                
+                <div class="device-selector">
+                    <label>设备ID:</label>
+                    <input type="text" id="deviceId" placeholder="例如: C3-7CDFA1B2C3D4">
+                </div>
+                
+                <div class="epd-selector">
+                    <label>墨水屏型号:</label>
+                    <select id="epdType">
+                        <option value="0">1.54" 200x200</option>
+                        <option value="3">2.13" 122x250</option>
+                        <option value="6">2.13" 104x212 (Type B)</option>
+                        <option value="9">2.9" 128x296</option>
+                        <option value="13">4.2" 400x300</option>
+                        <option value="16">4.2" 600x448</option>
+                        <option value="19">7.5" 640x384</option>
+                        <option value="22">7.5" 800x480</option>
+                    </select>
+                </div>
+                
+                <div class="section-title" style="margin-top: 25px;">图像设置</div>
+                
+                <div class="controls">
+                    <div class="control-group">
+                        <label>X偏移:</label>
+                        <input type="number" id="offsetX" value="0">
+                    </div>
+                    <div class="control-group">
+                        <label>Y偏移:</label>
+                        <input type="number" id="offsetY" value="0">
+                    </div>
+                    <div class="control-group">
+                        <label>宽度:</label>
+                        <input type="number" id="width" value="200">
+                    </div>
+                    <div class="control-group">
+                        <label>高度:</label>
+                        <input type="number" id="height" value="200">
+                    </div>
+                </div>
+                
+                <div class="processing-options">
+                    <label>
+                        <input type="radio" name="processType" value="floyd" checked>
+                        Floyd-Steinberg 抖动（推荐）
+                    </label>
+                    <label>
+                        <input type="radio" name="processType" value="threshold">
+                        简单阈值
+                    </label>
+                    <label>
+                        <input type="radio" name="processType" value="atkinson">
+                        Atkinson 抖动
+                    </label>
+                </div>
+                
+                <div class="section-title" style="margin-top: 25px;">操作</div>
+                <button class="btn btn-primary" onclick="processImage()">处理图片</button>
+                <button class="btn btn-success" onclick="uploadToDevice()">上传到设备</button>
+            </div>
+            
+            <div class="content-area">
+                <div id="dropZone" class="drop-zone">
+                    <p>📁 拖拽图片到这里</p>
+                    <p>或</p>
+                    <input type="file" id="fileInput" class="hidden" accept="image/*">
+                    <button class="btn btn-secondary" style="width: auto; padding: 10px 30px;" onclick="document.getElementById('fileInput').click()">选择图片</button>
+                </div>
+                
+                <div class="image-container">
+                    <div class="image-box">
+                        <h3>原始图片</h3>
+                        <div class="image-display">
+                            <canvas id="sourceCanvas" style="display:none;"></canvas>
+                            <img id="sourceImage" style="display:none;">
+                        </div>
+                    </div>
+                    
+                    <div class="image-box">
+                        <h3>处理后预览</h3>
+                        <div class="image-display">
+                            <canvas id="processedCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="status-bar" id="statusBar">
+            就绪
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

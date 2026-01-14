@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>用户登录 - ESP32 E-Paper Cloud</title>
+    <link rel="icon" href="data:;base64,=">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .card {
+            width: 360px;
+            background: white;
+            border-radius: 16px;
+            padding: 30px 28px 26px;
+            box-shadow: 0 18px 45px rgba(0,0,0,0.25);
+        }
+        .title {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .title h1 {
+            font-size: 1.6em;
+            color: #2d3748;
+            margin-bottom: 6px;
+        }
+        .title p {
+            font-size: 0.9em;
+            color: #718096;
+        }
+        .field {
+            margin-bottom: 14px;
+        }
+        .field label {
+            display: block;
+            font-size: 0.9em;
+            color: #4a5568;
+            margin-bottom: 4px;
+        }
+        .field input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            font-size: 0.95em;
+        }
+        .field input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 1px rgba(102,126,234,0.3);
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .btn {
+            flex: 1;
+            padding: 10px 0;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.95em;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            box-shadow: 0 8px 20px rgba(102,126,234,0.45);
+            transform: translateY(-1px);
+        }
+        .btn-secondary {
+            background: #edf2f7;
+            color: #4a5568;
+        }
+        .btn-secondary:hover {
+            background: #e2e8f0;
+        }
+        .status {
+            margin-top: 12px;
+            font-size: 0.85em;
+            color: #718096;
+            min-height: 18px;
+        }
+        .status.error {
+            color: #e53e3e;
+        }
+        .status.success {
+            color: #38a169;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="title">
+            <h1>ESP32 E-Paper 云控制</h1>
+            <p>登录后管理属于你的设备</p>
+        </div>
+
+        <div class="field">
+            <label for="username">用户名</label>
+            <input id="username" type="text" placeholder="输入用户名">
+        </div>
+        <div class="field">
+            <label for="password">密码</label>
+            <input id="password" type="password" placeholder="输入密码">
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-secondary" onclick="onRegister()">注册</button>
+            <button class="btn btn-primary" onclick="onLogin()">登录</button>
+        </div>
+
+        <div id="status" class="status">首次使用请先注册账号</div>
+    </div>
+
+    <script src="auth.js"></script>
+    <script>
+        function setStatus(msg, type) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = 'status' + (type ? ' ' + type : '');
+        }
+
+        async function onRegister() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                setStatus('用户名和密码不能为空', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    setStatus('注册成功，请点击登录', 'success');
+                } else {
+                    setStatus(data.error || '注册失败', 'error');
+                }
+            } catch (e) {
+                console.error(e);
+                setStatus('注册失败: ' + e.message, 'error');
+            }
+        }
+
+        async function onLogin() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
+
+            if (!username || !password) {
+                setStatus('用户名和密码不能为空', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (data.success && data.token) {
+                    setAuth(data.token, data.user);
+                    setStatus('登录成功，正在跳转...', 'success');
+                    setTimeout(() => {
+                        window.location.href = 'index.html';
+                    }, 600);
+                } else {
+                    setStatus(data.error || '登录失败', 'error');
+                }
+            } catch (e) {
+                console.error(e);
+                setStatus('登录失败: ' + e.message, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
+

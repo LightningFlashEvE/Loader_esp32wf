@@ -29,55 +29,79 @@ let mixedCropY = 0;
 // API 基础地址（前后端分离时，API通过nginx代理到后端）
 const API_BASE = '';
 
-// 初始化
-document.addEventListener('DOMContentLoaded', () => {
-    initDropZone();
-    initFileInput();
-    loadDeviceFromURL();
-    updateResolution();  // 初始化分辨率
-    log('系统初始化完成');
-});
+// 初始化 - 由 editor.js 处理主要初始化，这里只做基础设置
+// 如果 editor.js 未加载，则执行基础初始化
+if (typeof window.editorInitialized === 'undefined') {
+    document.addEventListener('DOMContentLoaded', () => {
+        // 检查是否是新版界面
+        if (document.getElementById('statusText')) {
+            // 新版界面，由 editor.js 处理
+            return;
+        }
+        // 旧版界面兼容
+        initDropZone();
+        initFileInput();
+        loadDeviceFromURL();
+        updateResolution();
+        log('系统初始化完成');
+    });
+}
 
-// 从URL参数加载设备ID
+// 从URL参数加载设备ID (旧版兼容)
 async function loadDeviceFromURL() {
     const params = new URLSearchParams(window.location.search);
     const deviceId = params.get('deviceId');
     
     if (deviceId) {
-        document.getElementById('deviceId').value = deviceId;
+        const deviceIdInput = document.getElementById('deviceId');
+        if (deviceIdInput) deviceIdInput.value = deviceId;
         
         // 从服务器加载设备信息
-        try {
-            const response = await fetch(`${API_BASE}/api/devices/list`);
+    try {
+        const response = await fetch(`${API_BASE}/api/devices/list`, {
+            headers: {
+                ...authHeaders()
+            }
+        });
             if (response.ok) {
                 const result = await response.json();
                 if (result.success) {
                     const device = result.devices.find(d => d.deviceId === deviceId);
-                    if (device) {
-                        document.getElementById('deviceName').textContent = device.deviceName || deviceId;
-                    } else {
-                        document.getElementById('deviceName').textContent = deviceId;
+                    const deviceNameEl = document.getElementById('deviceName');
+                    if (deviceNameEl) {
+                        deviceNameEl.textContent = device?.deviceName || deviceId;
                     }
                 }
             }
         } catch (e) {
-            document.getElementById('deviceName').textContent = deviceId;
+            console.log('Failed to load device info');
         }
     }
 }
 
 // 日志函数
 function log(message, type = 'info') {
+    // 优先使用新版状态栏
+    const statusText = document.getElementById('statusText');
     const statusBar = document.getElementById('statusBar');
+    
     const timestamp = new Date().toLocaleTimeString();
     const emoji = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
-    statusBar.textContent = `[${timestamp}] ${emoji} ${message}`;
+    const text = `${emoji} ${message}`;
+    
+    if (statusText) {
+        statusText.textContent = text;
+    } else if (statusBar) {
+        statusBar.textContent = `[${timestamp}] ${text}`;
+    }
+    
     console.log(`[${timestamp}] ${message}`);
 }
 
 // 初始化拖拽区域
 function initDropZone() {
     const dropZone = document.getElementById('dropZone');
+    if (!dropZone) return;
     
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -102,6 +126,8 @@ function initDropZone() {
 // 初始化文件输入
 function initFileInput() {
     const fileInput = document.getElementById('fileInput');
+    if (!fileInput) return;
+    
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleFile(e.target.files[0]);
@@ -113,25 +139,44 @@ function initFileInput() {
 
 // 显示原始图片并初始化裁剪框
 function displaySourceImage(img) {
-    const canvas = document.getElementById('sourceCanvas');
+    // 新版界面使用 mainCanvas
+    const mainCanvas = document.getElementById('mainCanvas');
+    const sourceCanvas = document.getElementById('sourceCanvas');
+    const canvas = mainCanvas || sourceCanvas;
+    
+    if (!canvas) return;
+    
     const ctx = canvas.getContext('2d');
-    const container = document.getElementById('cropContainer');
     
     // 重置缩放
     imageScale = 1;
-    document.getElementById('scaleSlider').value = 100;
-    document.getElementById('scaleInput').value = 100;
+    const scaleSlider = document.getElementById('scaleSlider');
+    const scaleInput = document.getElementById('scaleInput');
+    if (scaleSlider) scaleSlider.value = 100;
+    if (scaleInput) scaleInput.value = 100;
     
-    // 设置画布大小为图片大小
-    canvas.width = img.width;
-    canvas.height = img.height;
-    ctx.drawImage(img, 0, 0);
-    
-    canvas.style.display = 'block';
-    document.getElementById('sourceImage').style.display = 'none';
-    
-    // 初始化裁剪框
-    initCropBox();
+    // 新版界面：保持画布尺寸为目标尺寸，绘制图片
+    if (mainCanvas) {
+        const width = parseInt(document.getElementById('width').value);
+        const height = parseInt(document.getElementById('height').value);
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, width, height);
+        
+        // 自动适应屏幕
+        fitToScreen();
+    } else {
+        // 旧版界面：设置画布大小为图片大小
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        
+        canvas.style.display = 'block';
+        const sourceImage = document.getElementById('sourceImage');
+        if (sourceImage) sourceImage.style.display = 'none';
+        
+        // 初始化裁剪框
+        initCropBox();
+    }
 }
 
 // 初始化裁剪框
@@ -331,8 +376,23 @@ function fitToScreen() {
 // 全局变量：存储三色屏的红色通道数据
 let redChannelData = null;
 
+function authHeaders() {
+    if (typeof getAuthHeaders === 'function') {
+        return getAuthHeaders();
+    }
+    const token = localStorage.getItem('authToken');
+    return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
 // 处理图片
 function processImage() {
+    // 新版界面：检查当前模式
+    if (typeof currentMode !== 'undefined' && currentMode !== 'image') {
+        // 处理其他模式（文字、混合、模板）
+        processCurrentMode();
+        return;
+    }
+    
     if (!sourceImage) {
         log('请先选择图片', 'error');
         return;
@@ -340,13 +400,21 @@ function processImage() {
     
     log('开始处理图片...');
     
+    // 优先使用 mainCanvas（新版），否则用 sourceCanvas（旧版）
+    const mainCanvas = document.getElementById('mainCanvas');
     const sourceCanvas = document.getElementById('sourceCanvas');
     const processedCanvas = document.getElementById('processedCanvas');
+    
+    if (!processedCanvas) {
+        log('找不到处理画布', 'error');
+        return;
+    }
     
     // 获取参数
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
-    const processType = document.querySelector('input[name="processType"]:checked').value;
+    const processTypeEl = document.querySelector('input[name="processType"]:checked');
+    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
     
     if (width < 3 || height < 3) {
         log('图片尺寸太小', 'error');
@@ -368,8 +436,17 @@ function processImage() {
     const srcWidth = width / imageScale;
     const srcHeight = height / imageScale;
     
-    // 从源图像裁剪并绘制到目标画布
-    ctx.drawImage(sourceCanvas, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
+    // 从源图像绘制到目标画布
+    if (mainCanvas && sourceImage) {
+        // 新版界面：直接从源图像绘制
+        ctx.drawImage(sourceImage, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
+    } else if (sourceCanvas) {
+        // 旧版界面：从源画布绘制
+        ctx.drawImage(sourceCanvas, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
+    } else {
+        log('没有可处理的图像', 'error');
+        return;
+    }
     
     // 获取原始图像数据
     const imageData = ctx.getImageData(0, 0, width, height);
@@ -555,18 +632,37 @@ function pixelArrayToDataString(pixelArray) {
 
 // 进度条控制
 function showProgress(label = '上传进度') {
-    document.getElementById('progressContainer').style.display = 'block';
-    document.getElementById('progressLabel').textContent = label;
+    // 新版界面
+    const overlay = document.getElementById('progressOverlay');
+    if (overlay) {
+        overlay.classList.add('show');
+        const labelEl = document.getElementById('progressLabel');
+        if (labelEl) labelEl.textContent = label;
+    }
+    // 旧版界面
+    const container = document.getElementById('progressContainer');
+    if (container) {
+        container.style.display = 'block';
+        const labelEl = document.getElementById('progressLabel');
+        if (labelEl) labelEl.textContent = label;
+    }
     updateProgress(0);
 }
 
 function updateProgress(percent) {
-    document.getElementById('progressBar').style.width = percent + '%';
-    document.getElementById('progressPercent').textContent = Math.round(percent) + '%';
+    const bar = document.getElementById('progressBar');
+    if (bar) bar.style.width = percent + '%';
+    
+    const percentEl = document.getElementById('progressPercent');
+    if (percentEl) percentEl.textContent = Math.round(percent) + '%';
 }
 
 function hideProgress() {
-    document.getElementById('progressContainer').style.display = 'none';
+    const overlay = document.getElementById('progressOverlay');
+    if (overlay) overlay.classList.remove('show');
+    
+    const container = document.getElementById('progressContainer');
+    if (container) container.style.display = 'none';
 }
 
 // 发送数据到设备
@@ -580,7 +676,7 @@ async function sendDataToDevice(deviceId, dataString, label = '上传数据') {
         
         const response = await fetch(`${API_BASE}/api/epd/load`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ 
                 deviceId, 
                 data: chunkWithLength,
@@ -627,7 +723,7 @@ async function uploadToDevice() {
         // 1. 初始化EPD
         const initResponse = await fetch(`${API_BASE}/api/epd/init`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ deviceId, epdType })
         });
         
@@ -683,7 +779,7 @@ async function uploadToDevice() {
             // 发送NEXT命令切换到红色通道
             const nextResponse = await fetch(`${API_BASE}/api/epd/next`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
                 body: JSON.stringify({ deviceId })
             });
             
@@ -707,7 +803,7 @@ async function uploadToDevice() {
         log('正在刷新显示...');
         const showResponse = await fetch(`${API_BASE}/api/epd/show`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ deviceId })
         });
         
@@ -716,7 +812,15 @@ async function uploadToDevice() {
         }
         
         hideProgress();
-        log('上传完成！', 'success');
+        log('下发完成！', 'success');
+
+        // 更新顶部“最近下发时间”显示
+        const lastUpdateEl = document.getElementById('lastUpdateDisplay');
+        if (lastUpdateEl) {
+            const now = new Date();
+            const timeStr = now.toLocaleString();
+            lastUpdateEl.textContent = timeStr;
+        }
         
     } catch (error) {
         hideProgress();
@@ -743,7 +847,7 @@ async function showDeviceCode() {
         
         const response = await fetch(`${API_BASE}/api/epd/show-device-code`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ deviceId })
         });
         
@@ -840,8 +944,10 @@ function switchMode(mode) {
 // ==================== 文字模式 ====================
 
 function initTextCanvas() {
-    const canvas = document.getElementById('textCanvas');
-    const container = document.getElementById('textContainer');
+    // 支持新版（mainCanvas）和旧版（textCanvas）UI
+    const canvas = document.getElementById('mainCanvas') || document.getElementById('textCanvas');
+    if (!canvas) return;
+    
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
     
@@ -850,11 +956,17 @@ function initTextCanvas() {
     canvas.style.maxWidth = '100%';
     
     renderTextCanvas();
-    bindTextCanvasEvents();
+    
+    // 旧版UI需要绑定事件
+    if (document.getElementById('textCanvas')) {
+        bindTextCanvasEvents();
+    }
 }
 
 function renderTextCanvas() {
-    const canvas = document.getElementById('textCanvas');
+    // 支持新版（mainCanvas）和旧版（textCanvas）UI
+    const canvas = document.getElementById('mainCanvas') || document.getElementById('textCanvas');
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
@@ -884,16 +996,19 @@ function renderTextCanvas() {
 }
 
 function addTextItem() {
-    const text = document.getElementById('newTextContent').value.trim();
+    const textInput = document.getElementById('newTextContent');
+    if (!textInput) return;
+    
+    const text = textInput.value.trim();
     if (!text) {
         log('请输入文字内容', 'error');
         return;
     }
     
-    const size = parseInt(document.getElementById('newTextSize').value) || 48;
-    const color = document.getElementById('newTextColor').value;
-    const width = parseInt(document.getElementById('width').value);
-    const height = parseInt(document.getElementById('height').value);
+    const size = parseInt(document.getElementById('newTextSize')?.value) || 48;
+    const color = document.getElementById('newTextColor')?.value || 'black';
+    const width = parseInt(document.getElementById('width')?.value) || 800;
+    const height = parseInt(document.getElementById('height')?.value) || 480;
     
     const item = {
         id: Date.now(),
@@ -907,38 +1022,55 @@ function addTextItem() {
     textItems.push(item);
     selectedTextId = item.id;
     
-    document.getElementById('newTextContent').value = '';
+    textInput.value = '';
     
-    renderTextCanvas();
+    // 调用渲染函数（新版界面用 renderCanvas，旧版用 renderTextCanvas）
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderTextCanvas === 'function') {
+        renderTextCanvas();
+    }
     updateTextItemsList();
     log(`已添加文字: "${text}"`, 'success');
 }
 
 function updateTextItemsList() {
-    const container = document.getElementById('textItemsList');
+    // 支持新版和旧版UI
+    const container = document.getElementById('textItemsList') || document.getElementById('textList');
+    if (!container) return;
     
     if (textItems.length === 0) {
-        container.innerHTML = '<p style="color: #888; text-align: center;">暂无文字</p>';
+        container.innerHTML = '<div style="padding: 20px; text-align: center; color: #888;">暂无文字</div>';
         return;
     }
     
     container.innerHTML = textItems.map(item => `
-        <div style="display: flex; align-items: center; padding: 8px; margin-bottom: 5px; 
-                    background: ${item.id === selectedTextId ? '#e7f3ff' : '#f8f9fa'}; 
-                    border-radius: 5px; cursor: pointer;"
-             onclick="selectTextItem(${item.id})">
-            <span style="flex: 1; color: ${item.color}; font-weight: bold;">${item.text}</span>
+        <div class="text-item ${item.id === selectedTextId ? 'selected' : ''}" 
+             onclick="selectTextItem(${item.id})"
+             style="display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #e2e8f0; cursor: pointer;">
+            <span class="color-dot" style="width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; background: ${item.color};"></span>
+            <span class="text-content" style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.text}</span>
             <span style="font-size: 12px; color: #888; margin-right: 10px;">${item.size}px</span>
-            <button onclick="event.stopPropagation(); deleteTextItem(${item.id})" 
-                    style="background: #dc3545; color: white; border: none; border-radius: 3px; 
-                           padding: 2px 8px; cursor: pointer;">✕</button>
+            <button class="delete-btn" onclick="event.stopPropagation(); deleteTextItem(${item.id})" 
+                    style="background: none; border: none; cursor: pointer; color: #f56565; padding: 4px;">🗑️</button>
         </div>
     `).join('');
 }
 
+// 别名，兼容新版UI
+function updateTextList() {
+    updateTextItemsList();
+}
+
 function selectTextItem(id) {
     selectedTextId = id;
-    renderTextCanvas();
+    
+    // 调用渲染函数
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderTextCanvas === 'function') {
+        renderTextCanvas();
+    }
     updateTextItemsList();
 }
 
@@ -947,7 +1079,13 @@ function deleteTextItem(id) {
     if (selectedTextId === id) {
         selectedTextId = null;
     }
-    renderTextCanvas();
+    
+    // 调用渲染函数
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderTextCanvas === 'function') {
+        renderTextCanvas();
+    }
     updateTextItemsList();
     log('已删除文字', 'success');
 }
@@ -955,7 +1093,13 @@ function deleteTextItem(id) {
 function clearAllText() {
     textItems = [];
     selectedTextId = null;
-    renderTextCanvas();
+    
+    // 调用渲染函数
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderTextCanvas === 'function') {
+        renderTextCanvas();
+    }
     updateTextItemsList();
     log('已清空所有文字', 'success');
 }
@@ -1026,35 +1170,103 @@ function bindTextCanvasEvents() {
     };
 }
 
-// 修改 processImage 以支持文字模式和混合模式
-const originalProcessImage = processImage;
-processImage = function() {
+// 处理当前模式（文字、混合、模板）
+function processCurrentMode() {
     if (currentMode === 'text') {
         processTextImage();
     } else if (currentMode === 'mixed') {
         processMixedImage();
-    } else {
-        originalProcessImage();
+    } else if (currentMode === 'template') {
+        processTemplateImage();
     }
-};
+}
 
-function processTextImage() {
-    const textCanvas = document.getElementById('textCanvas');
+// 处理模板模式
+function processTemplateImage() {
+    const mainCanvas = document.getElementById('mainCanvas');
     const processedCanvas = document.getElementById('processedCanvas');
+    
+    if (!mainCanvas || !processedCanvas) return;
+    
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
-    const processType = document.querySelector('input[name="processType"]:checked').value;
+    const processTypeEl = document.querySelector('input[name="processType"]:checked');
+    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
     
-    // 确保文字画布尺寸正确
-    if (textCanvas.width !== width || textCanvas.height !== height) {
-        initTextCanvas();
-    }
-    
-    // 复制文字画布到处理画布
+    // 复制主画布到处理画布
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
-    ctx.drawImage(textCanvas, 0, 0);
+    ctx.drawImage(mainCanvas, 0, 0);
+    
+    // 获取图像数据并处理
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    
+    // 重置红色通道数据
+    redChannelData = null;
+    
+    // 三色屏处理
+    if (processType.startsWith('tricolor_')) {
+        redChannelData = new Array(width * height).fill(0);
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            
+            const isRed = (r > 200 && g < 100 && b < 100);
+            
+            if (isRed) {
+                redChannelData[i / 4] = 1;
+                data[i] = 255;
+                data[i + 1] = 0;
+                data[i + 2] = 0;
+            } else {
+                const gray = r * 0.299 + g * 0.587 + b * 0.114;
+                const bw = gray < 128 ? 0 : 255;
+                data[i] = data[i + 1] = data[i + 2] = bw;
+            }
+        }
+        
+        log(`三色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
+    } else {
+        // 黑白处理
+        for (let i = 0; i < data.length; i += 4) {
+            const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+            const bw = gray < 128 ? 0 : 255;
+            data[i] = data[i + 1] = data[i + 2] = bw;
+        }
+        
+        log('模板处理完成', 'success');
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    processedImageData = imageData;
+}
+
+function processTextImage() {
+    // 新版界面：文字已经直接画在 mainCanvas 上，这里从 mainCanvas 拷贝到 processedCanvas 再做处理
+    const mainCanvas = document.getElementById('mainCanvas');
+    const processedCanvas = document.getElementById('processedCanvas');
+    if (!mainCanvas || !processedCanvas) {
+        log('画布未就绪，请稍后重试', 'error');
+        return;
+    }
+
+    const widthInput = document.getElementById('width');
+    const heightInput = document.getElementById('height');
+    const width = widthInput ? parseInt(widthInput.value, 10) || mainCanvas.width : mainCanvas.width;
+    const height = heightInput ? parseInt(heightInput.value, 10) || mainCanvas.height : mainCanvas.height;
+
+    const processTypeEl = document.querySelector('input[name="processType"]:checked');
+    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
+
+    // 将主画布内容拷贝到处理画布
+    processedCanvas.width = width;
+    processedCanvas.height = height;
+    const ctx = processedCanvas.getContext('2d');
+    ctx.drawImage(mainCanvas, 0, 0, width, height);
     
     // 获取图像数据
     const imageData = ctx.getImageData(0, 0, width, height);
@@ -1110,7 +1322,10 @@ function processTextImage() {
 // ==================== 图文混合模式 ====================
 
 function initMixedCanvas() {
-    const canvas = document.getElementById('mixedCanvas');
+    // 支持新版（mainCanvas）和旧版（mixedCanvas）UI
+    const canvas = document.getElementById('mainCanvas') || document.getElementById('mixedCanvas');
+    if (!canvas) return;
+    
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
     
@@ -1120,15 +1335,24 @@ function initMixedCanvas() {
     
     // 重置缩放
     mixedImageScale = 1;
-    document.getElementById('mixedScaleSlider').value = 100;
-    document.getElementById('mixedScaleInput').value = 100;
+    const scaleSlider = document.getElementById('mixedScaleSlider');
+    const scaleInput = document.getElementById('mixedScaleInput');
+    if (scaleSlider) scaleSlider.value = 100;
+    if (scaleInput) scaleInput.value = 100;
     
     renderMixedCanvas();
-    bindMixedCanvasEvents();
+    
+    // 旧版UI需要绑定事件
+    if (document.getElementById('mixedCanvas')) {
+        bindMixedCanvasEvents();
+    }
 }
 
 function renderMixedCanvas() {
-    const canvas = document.getElementById('mixedCanvas');
+    // 支持新版（mainCanvas）和旧版（mixedCanvas）UI
+    const canvas = document.getElementById('mainCanvas') || document.getElementById('mixedCanvas');
+    if (!canvas) return;
+    
     const ctx = canvas.getContext('2d');
     const width = canvas.width;
     const height = canvas.height;
@@ -1228,16 +1452,19 @@ function fitMixedToScreen() {
 }
 
 function addMixedTextItem() {
-    const text = document.getElementById('mixedTextContent').value.trim();
+    const textInput = document.getElementById('mixedTextContent');
+    if (!textInput) return;
+    
+    const text = textInput.value.trim();
     if (!text) {
         log('请输入文字内容', 'error');
         return;
     }
     
-    const size = parseInt(document.getElementById('mixedTextSize').value) || 36;
-    const color = document.getElementById('mixedTextColor').value;
-    const width = parseInt(document.getElementById('width').value);
-    const height = parseInt(document.getElementById('height').value);
+    const size = parseInt(document.getElementById('mixedTextSize')?.value) || 36;
+    const color = document.getElementById('mixedTextColor')?.value || 'black';
+    const width = parseInt(document.getElementById('width')?.value) || 800;
+    const height = parseInt(document.getElementById('height')?.value) || 480;
     
     const item = {
         id: Date.now(),
@@ -1251,18 +1478,24 @@ function addMixedTextItem() {
     mixedTextItems.push(item);
     selectedMixedTextId = item.id;
     
-    document.getElementById('mixedTextContent').value = '';
+    textInput.value = '';
     
-    renderMixedCanvas();
+    // 调用渲染函数（新版界面用 renderCanvas，旧版用 renderMixedCanvas）
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderMixedCanvas === 'function') {
+        renderMixedCanvas();
+    }
     updateMixedTextItemsList();
     log(`已添加文字: "${text}"`, 'success');
 }
 
 function updateMixedTextItemsList() {
-    const container = document.getElementById('mixedTextItemsList');
+    const container = document.getElementById('mixedTextItemsList') || document.getElementById('mixedTextList');
+    if (!container) return;
     
     if (mixedTextItems.length === 0) {
-        container.innerHTML = '<p style="color: #888; text-align: center;">暂无文字</p>';
+        container.innerHTML = '<div style="padding: 15px; text-align: center; color: #888;">暂无文字</div>';
         return;
     }
     
@@ -1299,7 +1532,13 @@ function deleteMixedTextItem(id) {
 function clearMixedText() {
     mixedTextItems = [];
     selectedMixedTextId = null;
-    renderMixedCanvas();
+    
+    // 调用渲染函数
+    if (typeof renderCanvas === 'function' && document.getElementById('mainCanvas')) {
+        renderCanvas();
+    } else if (typeof renderMixedCanvas === 'function') {
+        renderMixedCanvas();
+    }
     updateMixedTextItemsList();
     log('已清空所有文字', 'success');
 }
@@ -1394,22 +1633,38 @@ function bindMixedCanvasEvents() {
 }
 
 function processMixedImage() {
-    const mixedCanvas = document.getElementById('mixedCanvas');
+    // 新版界面：使用 mainCanvas 而不是 mixedCanvas
+    const mainCanvas = document.getElementById('mainCanvas');
     const processedCanvas = document.getElementById('processedCanvas');
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
     const processType = document.querySelector('input[name="processType"]:checked').value;
     
-    // 确保混合画布尺寸正确
-    if (mixedCanvas.width !== width || mixedCanvas.height !== height) {
-        initMixedCanvas();
+    if (!mainCanvas) {
+        log('找不到主画布', 'error');
+        return;
     }
     
-    // 复制混合画布到处理画布
+    if (!processedCanvas) {
+        log('找不到处理画布', 'error');
+        return;
+    }
+    
+    // 确保主画布尺寸正确
+    if (mainCanvas.width !== width || mainCanvas.height !== height) {
+        mainCanvas.width = width;
+        mainCanvas.height = height;
+        // 重新渲染画布
+        if (typeof renderCanvas === 'function') {
+            renderCanvas();
+        }
+    }
+    
+    // 复制主画布到处理画布
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
-    ctx.drawImage(mixedCanvas, 0, 0);
+    ctx.drawImage(mainCanvas, 0, 0);
     
     // 获取图像数据
     const imageData = ctx.getImageData(0, 0, width, height);

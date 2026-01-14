@@ -5,11 +5,28 @@ let deviceStatus = {};
 // API 基础地址（前后端分离时，API通过nginx代理到后端）
 const API_BASE = '';
 
+function authHeaders() {
+    if (typeof getAuthHeaders === 'function') {
+        return getAuthHeaders();
+    }
+    const token = localStorage.getItem('authToken');
+    return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
-    loadDevices();
-    startPolling();
-    log('系统初始化完成');
+    // 需要先检查是否已登录
+    if (typeof requireAuth === 'function') {
+        requireAuth().then(() => {
+            loadDevices();
+            startPolling();
+            log('系统初始化完成');
+        });
+    } else {
+        loadDevices();
+        startPolling();
+        log('系统初始化完成');
+    }
 });
 
 // 日志函数
@@ -24,7 +41,11 @@ function log(message, type = 'info') {
 // 从服务器加载设备列表
 async function loadDevices() {
     try {
-        const response = await fetch(`${API_BASE}/api/devices/list`);
+        const response = await fetch(`${API_BASE}/api/devices/list`, {
+            headers: {
+                ...authHeaders()
+            }
+        });
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
@@ -81,7 +102,8 @@ async function addDevice() {
         const response = await fetch(`${API_BASE}/api/devices/add`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...authHeaders()
             },
             body: JSON.stringify({
                 deviceId: deviceId,
@@ -115,7 +137,10 @@ async function removeDevice(deviceId) {
     
     try {
         const response = await fetch(`${API_BASE}/api/devices/${deviceId}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+                ...authHeaders()
+            }
         });
         
         const result = await response.json();
@@ -238,7 +263,11 @@ function startPolling() {
 
 async function pollDeviceStatus() {
     try {
-        const response = await fetch(`${API_BASE}/api/devices`);
+        const response = await fetch(`${API_BASE}/api/devices`, {
+            headers: {
+                ...authHeaders()
+            }
+        });
         if (response.ok) {
             const result = await response.json();
             if (result.success && result.devices) {

@@ -2,497 +2,1127 @@
 <html>
 <head>
     <meta charset='utf-8'>
-    <title>ESP32 E-Paper Cloud Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 E-Paper 页面编辑器</title>
     <link rel='icon' href='data:;base64,='>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --primary: #667eea;
+            --primary-dark: #5a67d8;
+            --secondary: #764ba2;
+            --success: #48bb78;
+            --danger: #f56565;
+            --warning: #ed8936;
+            --bg-dark: #1a202c;
+            --bg-light: #f7fafc;
+            --text-dark: #2d3748;
+            --text-light: #718096;
+            --border: #e2e8f0;
+            --sidebar-width: 280px;
+            --header-height: 60px;
+            --right-panel-width: 300px;
+        }
+        
         body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-light);
             min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-        .header p { font-size: 1.1em; opacity: 0.9; }
-        .main-content {
-            display: flex;
-            min-height: 600px;
-        }
-        .sidebar {
-            width: 320px;
-            background: #f8f9fa;
-            padding: 25px;
-            border-right: 1px solid #dee2e6;
-        }
-        .content-area {
-            flex: 1;
-            padding: 30px;
             display: flex;
             flex-direction: column;
         }
-        .section-title {
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #495057;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
-        }
-        .device-selector {
-            margin-bottom: 20px;
-        }
-        .device-selector select, .device-selector input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-top: 8px;
-            transition: all 0.3s;
-        }
-        .device-selector select:focus, .device-selector input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .epd-selector {
-            margin-bottom: 20px;
-        }
-        .epd-selector select {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-top: 8px;
-        }
-        .controls {
-            margin-top: 20px;
-        }
-        .control-group {
-            margin-bottom: 15px;
-        }
-        .control-group label {
-            display: block;
-            font-size: 0.9em;
-            color: #666;
-            margin-bottom: 5px;
-        }
-        .control-group input[type="number"] {
-            width: 100%;
-            padding: 8px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-        .btn {
-            width: 100%;
-            padding: 14px;
-            border: none;
-            border-radius: 8px;
-            font-size: 15px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        
+        /* ===== 顶部导航栏 ===== */
+        .top-bar {
+            height: var(--header-height);
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
             color: white;
-        }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
-        .btn-secondary { background: #6c757d; color: white; }
-        .btn-secondary:hover { background: #5a6268; }
-        .btn-success { background: #28a745; color: white; }
-        .btn-success:hover { background: #218838; }
-        .drop-zone {
-            border: 3px dashed #ccc;
-            border-radius: 10px;
-            padding: 40px;
-            text-align: center;
-            background: #f8f9fa;
-            transition: all 0.3s;
-            cursor: pointer;
-            margin-bottom: 20px;
-        }
-        .drop-zone:hover, .drop-zone.dragover {
-            border-color: #667eea;
-            background: #e7f3ff;
-        }
-        .drop-zone p {
-            color: #666;
-            font-size: 1.1em;
-            margin: 10px 0;
-        }
-        .image-container {
-            flex: 1;
-            display: flex;
-            gap: 20px;
-        }
-        .image-box {
-            flex: 1;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 15px;
-            background: #f8f9fa;
-            display: flex;
-            flex-direction: column;
-        }
-        .image-box h3 {
-            margin-bottom: 15px;
-            color: #495057;
-            font-size: 1.1em;
-        }
-        .image-display {
-            flex: 1;
             display: flex;
             align-items: center;
-            justify-content: center;
-            background: white;
-            border-radius: 5px;
-            overflow: auto;
+            padding: 0 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 100;
         }
-        .image-display img, .image-display canvas {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+        
+        .top-bar .logo {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-right: 30px;
         }
-        .status-bar {
-            padding: 15px 30px;
-            background: #f8f9fa;
-            border-top: 1px solid #dee2e6;
-            font-family: 'Courier New', monospace;
+        
+        .device-status {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex: 1;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
             font-size: 0.9em;
-            color: #495057;
+            opacity: 0.95;
         }
-        .hidden { display: none; }
-        .processing-options {
-            margin-bottom: 20px;
-        }
-        .processing-options label {
-            display: block;
-            margin-bottom: 8px;
-            cursor: pointer;
-        }
-        .processing-options input[type="radio"] {
-            margin-right: 8px;
-        }
-        .spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 1s ease-in-out infinite;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .online-indicator {
-            display: inline-block;
+        
+        .status-dot {
             width: 10px;
             height: 10px;
             border-radius: 50%;
-            background: #28a745;
-            margin-right: 8px;
             animation: pulse 2s infinite;
         }
+        
+        .status-dot.online { background: #48bb78; }
+        .status-dot.offline { background: #f56565; animation: none; }
+        
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
+        
+        .top-bar .actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .top-bar .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .btn-light {
+            background: rgba(255,255,255,0.2);
+            color: white;
+        }
+        
+        .btn-light:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        /* ===== 主布局 ===== */
+        .main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        /* ===== 左侧边栏 - 页面列表 ===== */
+        .left-sidebar {
+            width: var(--sidebar-width);
+            background: white;
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .sidebar-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .sidebar-header h3 {
+            font-size: 1em;
+            color: var(--text-dark);
+        }
+        
+        .btn-new {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        
+        .btn-new:hover {
+            background: var(--primary-dark);
+        }
+        
+        .page-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        
+        .page-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+        
+        .page-item:hover {
+            background: var(--bg-light);
+        }
+        
+        .page-item.active {
+            background: #ebf4ff;
+            border-color: var(--primary);
+        }
+        
+        .page-thumb {
+            width: 60px;
+            height: 36px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            margin-right: 12px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .page-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .page-thumb .icon {
+            font-size: 1.2em;
+        }
+        
+        .page-info {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .page-name {
+            font-weight: 500;
+            color: var(--text-dark);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .page-type {
+            font-size: 0.8em;
+            color: var(--text-light);
+        }
+        
+        .page-actions {
+            display: flex;
+            gap: 5px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        
+        .page-item:hover .page-actions {
+            opacity: 1;
+        }
+        
+        .page-actions button {
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            background: transparent;
+        }
+        
+        .page-actions button:hover {
+            background: #e2e8f0;
+        }
+        
+        .page-actions .delete:hover {
+            background: #fed7d7;
+            color: var(--danger);
+        }
+        
+        /* ===== 主内容区 - 画布 ===== */
+        .canvas-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #e2e8f0;
+            overflow: hidden;
+        }
+        
+        .toolbar {
+            background: white;
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-right: 15px;
+            border-right: 1px solid var(--border);
+        }
+        
+        .toolbar-group:last-child {
+            border-right: none;
+        }
+        
+        .toolbar label {
+            font-size: 0.85em;
+            color: var(--text-light);
+        }
+        
+        .toolbar select, .toolbar input {
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        
+        .toolbar .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #38a169;
+        }
+        
+        .btn-secondary {
+            background: #e2e8f0;
+            color: var(--text-dark);
+        }
+        
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+        
+        .canvas-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 30px;
+            overflow: auto;
+        }
+        
+        .canvas-container {
+            background: white;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+            position: relative;
+        }
+        
+        #mainCanvas {
+            display: block;
+        }
+        
+        /* ===== 右侧面板 - 属性/工具 ===== */
+        .right-panel {
+            width: var(--right-panel-width);
+            background: white;
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .panel-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .panel-tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            color: var(--text-light);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .panel-tab:hover {
+            color: var(--text-dark);
+        }
+        
+        .panel-tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        
+        .panel-section {
+            margin-bottom: 20px;
+        }
+        
+        .panel-section h4 {
+            font-size: 0.9em;
+            color: var(--text-dark);
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .mode-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .mode-btn {
+            padding: 12px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+        }
+        
+        .mode-btn:hover {
+            border-color: var(--primary);
+            background: #f7fafc;
+        }
+        
+        .mode-btn.active {
+            border-color: var(--primary);
+            background: #ebf4ff;
+        }
+        
+        .mode-btn .icon {
+            font-size: 1.5em;
+            margin-bottom: 5px;
+        }
+        
+        .mode-btn .label {
+            font-size: 0.85em;
+            color: var(--text-dark);
+        }
+        
+        .form-group {
+            margin-bottom: 12px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 0.85em;
+            color: var(--text-light);
+            margin-bottom: 5px;
+        }
+        
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .form-row .form-group {
+            flex: 1;
+        }
+        
+        .slider-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .slider-group input[type="range"] {
+            flex: 1;
+        }
+        
+        .slider-group input[type="number"] {
+            width: 60px;
+        }
+        
+        /* ===== 处理选项 ===== */
+        .process-options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .process-option {
+            display: flex;
+            align-items: center;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .process-option:hover {
+            border-color: var(--primary);
+        }
+        
+        .process-option.active {
+            border-color: var(--primary);
+            background: #ebf4ff;
+        }
+        
+        .process-option input {
+            margin-right: 10px;
+        }
+        
+        /* ===== 文字列表 ===== */
+        .text-list {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+        
+        .text-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+        }
+        
+        .text-item:last-child {
+            border-bottom: none;
+        }
+        
+        .text-item:hover {
+            background: var(--bg-light);
+        }
+        
+        .text-item.selected {
+            background: #ebf4ff;
+        }
+        
+        .text-item .color-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 10px;
+        }
+        
+        .text-item .text-content {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .text-item .delete-btn {
+            opacity: 0;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--danger);
+            padding: 4px;
+        }
+        
+        .text-item:hover .delete-btn {
+            opacity: 1;
+        }
+        
+        /* ===== 底部状态栏 ===== */
+        .status-bar {
+            background: white;
+            border-top: 1px solid var(--border);
+            padding: 8px 20px;
+            font-size: 0.85em;
+            color: var(--text-light);
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        /* ===== 进度条 ===== */
+        .progress-overlay {
+            position: fixed;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 5px 30px rgba(0,0,0,0.2);
+            display: none;
+            z-index: 1000;
+            min-width: 300px;
+        }
+        
+        .progress-overlay.show {
+            display: block;
+        }
+        
+        .progress-label {
+            font-size: 0.9em;
+            color: var(--text-dark);
+            margin-bottom: 10px;
+        }
+        
+        .progress-bar-bg {
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+        
+        /* ===== 模态框 ===== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        
+        .modal-overlay.show {
+            display: flex;
+        }
+        
+        .modal {
+            background: white;
+            border-radius: 12px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-header h3 {
+            font-size: 1.2em;
+            color: var(--text-dark);
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5em;
+            cursor: pointer;
+            color: var(--text-light);
+        }
+        
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            max-height: 60vh;
+        }
+        
+        .modal-footer {
+            padding: 15px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        
+        /* ===== 模板选择器 ===== */
+        .template-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+        
+        .template-card {
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+        }
+        
+        .template-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        .template-card .icon {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .template-card .name {
+            font-weight: 500;
+            color: var(--text-dark);
+            margin-bottom: 5px;
+        }
+        
+        .template-card .desc {
+            font-size: 0.8em;
+            color: var(--text-light);
+        }
+        
+        /* ===== 拖拽区域 ===== */
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 15px;
+        }
+        
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--primary);
+            background: #f0f7ff;
+        }
+        
+        .drop-zone .icon {
+            font-size: 2em;
+            color: var(--text-light);
+            margin-bottom: 10px;
+        }
+        
+        .drop-zone p {
+            color: var(--text-light);
+            font-size: 0.9em;
+        }
+        
+        /* ===== 隐藏元素 ===== */
+        .hidden {
+            display: none !important;
+        }
+        
+        /* ===== 响应式 ===== */
+        @media (max-width: 1200px) {
+            .right-panel {
+                width: 260px;
+            }
+        }
+        
+        @media (max-width: 992px) {
+            .left-sidebar {
+                width: 220px;
+            }
+            .right-panel {
+                width: 240px;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <h1>📱 <span id="deviceName">ESP32设备</span></h1>
-                    <p>通过云端MQTT控制墨水屏显示</p>
+    <!-- 顶部导航栏 -->
+    <div class="top-bar">
+        <div class="logo">📱 E-Paper Studio</div>
+        <div class="device-status">
+            <div class="status-item">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="deviceNameDisplay">未选择设备</span>
+            </div>
+            <div class="status-item">
+                <span>📐</span>
+                <span id="resolutionDisplay">800×480</span>
+            </div>
+            <div class="status-item">
+                <span>🕐</span>
+                <span id="lastUpdateDisplay">--</span>
+            </div>
+        </div>
+        <div class="actions">
+            <button class="btn btn-light" onclick="window.location.href='index.html'">
+                ⬅️ 返回
+            </button>
+            <button class="btn btn-light" onclick="showPageListModal()">
+                📋 页面列表
+            </button>
+        </div>
+    </div>
+    
+    <!-- 主布局 -->
+    <div class="main-layout">
+        <!-- 左侧边栏 - 页面列表 -->
+        <div class="left-sidebar">
+            <div class="sidebar-header">
+                <h3>📄 页面</h3>
+                <button class="btn-new" onclick="showNewPageModal()">+ 新建</button>
+            </div>
+            <div class="page-list" id="pageList">
+                <!-- 页面列表将动态生成 -->
+                <div class="empty-state" style="text-align: center; padding: 40px 20px; color: var(--text-light);">
+                    <div style="font-size: 2em; margin-bottom: 10px;">📝</div>
+                    <p>暂无页面</p>
+                    <p style="font-size: 0.85em;">点击上方"+ 新建"创建第一个页面</p>
                 </div>
-                <button class="btn btn-secondary" onclick="window.location.href='index.html'" style="width: auto; padding: 10px 20px;">
-                    ⬅️ 返回设备列表
-                </button>
             </div>
         </div>
         
-        <div class="main-content">
-            <div class="sidebar">
-                <div class="section-title">设备设置</div>
-                
-                <div class="device-selector">
-                    <label>设备ID:</label>
-                    <input type="text" id="deviceId" placeholder="例如: B6DA20" readonly style="background: #f0f0f0;">
-                </div>
-                
-                <div class="epd-selector">
-                    <label>墨水屏型号:（选择后自动设置分辨率）</label>
-                    <select id="epdType" onchange="updateResolution(); updateDimensions();">
-                        <option value="0">1.54" 200x200</option>
-                        <option value="1">1.54" B 200x200 (红)</option>
-                        <option value="3">2.13" 122x250</option>
-                        <option value="6">2.13" B 104x212 (红)</option>
-                        <option value="9">2.9" 128x296</option>
-                        <option value="13">4.2" 400x300</option>
-                        <option value="14">4.2" B 400x300 (红)</option>
-                        <option value="16">5.83" 600x448</option>
-                        <option value="19">7.5" 640x384</option>
-                        <option value="22">7.5" V2 800x480</option>
-                        <option value="23" selected>7.5" B V2 800x480 (红) ⭐</option>
-                        <option value="26">7.5" HD 880x528</option>
+        <!-- 主内容区 - 画布 -->
+        <div class="canvas-area">
+            <div class="toolbar">
+                <div class="toolbar-group">
+                    <label>屏幕型号:</label>
+                    <select id="epdType" onchange="updateResolution()">
+                        <option value="0">1.54" 200×200</option>
+                        <option value="1">1.54" B 200×200 (红)</option>
+                        <option value="3">2.13" 122×250</option>
+                        <option value="6">2.13" B 104×212 (红)</option>
+                        <option value="9">2.9" 128×296</option>
+                        <option value="13">4.2" 400×300</option>
+                        <option value="14">4.2" B 400×300 (红)</option>
+                        <option value="16">5.83" 600×448</option>
+                        <option value="19">7.5" 640×384</option>
+                        <option value="22">7.5" V2 800×480</option>
+                        <option value="23" selected>7.5" B V2 800×480 (红) ⭐</option>
+                        <option value="26">7.5" HD 880×528</option>
                     </select>
                 </div>
-                
-                <div class="section-title" style="margin-top: 25px;">内容模式</div>
-                <div class="control-group" style="display: flex; gap: 5px; flex-wrap: wrap;">
-                    <button class="btn btn-primary" id="btnImageMode" onclick="switchMode('image')" style="flex:1; padding: 10px; min-width: 80px;">🖼️ 图片</button>
-                    <button class="btn btn-secondary" id="btnTextMode" onclick="switchMode('text')" style="flex:1; padding: 10px; min-width: 80px;">📝 文字</button>
-                    <button class="btn btn-secondary" id="btnMixedMode" onclick="switchMode('mixed')" style="flex:1; padding: 10px; min-width: 80px;">🎨 图文</button>
+                <div class="toolbar-group">
+                    <button class="btn btn-secondary" onclick="savePage()">💾 保存</button>
+                    <button class="btn btn-success" onclick="uploadToDevice()">📤 下发</button>
+                </div>
+            </div>
+            
+            <div class="canvas-wrapper">
+                <div class="canvas-container" id="canvasContainer">
+                    <canvas id="mainCanvas" width="800" height="480"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧面板 -->
+        <div class="right-panel">
+            <div class="panel-tabs">
+                <div class="panel-tab active" data-panel="edit" onclick="switchPanel('edit')">编辑</div>
+                <div class="panel-tab" data-panel="process" onclick="switchPanel('process')">处理</div>
+            </div>
+            
+            <div class="panel-content" id="editPanel">
+                <!-- 内容模式选择 -->
+                <div class="panel-section">
+                    <h4>内容模式</h4>
+                    <div class="mode-buttons">
+                        <div class="mode-btn active" data-mode="image" onclick="switchMode('image')">
+                            <div class="icon">🖼️</div>
+                            <div class="label">图片</div>
+                        </div>
+                        <div class="mode-btn" data-mode="text" onclick="switchMode('text')">
+                            <div class="icon">📝</div>
+                            <div class="label">文字</div>
+                        </div>
+                        <div class="mode-btn" data-mode="mixed" onclick="switchMode('mixed')">
+                            <div class="icon">🎨</div>
+                            <div class="label">图文</div>
+                        </div>
+                        <div class="mode-btn" data-mode="template" onclick="switchMode('template')">
+                            <div class="icon">📋</div>
+                            <div class="label">模板</div>
+                        </div>
+                    </div>
                 </div>
                 
-                <div id="imageModePanel">
-                    <div class="section-title" style="margin-top: 15px;">图像裁剪</div>
+                <!-- 图片模式控件 -->
+                <div id="imageModeControls">
+                    <div class="panel-section">
+                        <h4>图片上传</h4>
+                        <div class="drop-zone" id="dropZone">
+                            <div class="icon">📁</div>
+                            <p>拖拽图片到这里<br>或点击选择</p>
+                            <input type="file" id="fileInput" class="hidden" accept="image/*">
+                        </div>
+                    </div>
                     
-                    <div class="controls">
-                        <div class="control-group">
-                            <label>缩放:</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="range" id="scaleSlider" min="10" max="300" value="100" 
-                                       style="flex: 1;" oninput="updateScaleFromSlider()">
-                                <input type="number" id="scaleInput" value="100" min="10" max="500" 
-                                       style="width: 70px; padding: 5px; border: 2px solid #e0e0e0; border-radius: 5px;"
-                                       onchange="updateScaleFromInput()">
+                    <div class="panel-section">
+                        <h4>缩放裁剪</h4>
+                        <div class="form-group">
+                            <label>缩放比例</label>
+                            <div class="slider-group">
+                                <input type="range" id="scaleSlider" min="10" max="300" value="100" oninput="updateScale()">
+                                <input type="number" id="scaleInput" value="100" min="10" max="500" onchange="updateScaleFromInput()">
                                 <span>%</span>
                             </div>
                         </div>
-                    <div class="control-group">
-                        <label>目标宽度:</label>
-                        <input type="number" id="width" value="800" readonly style="background: #f0f0f0;">
-                    </div>
-                    <div class="control-group">
-                        <label>目标高度:</label>
-                        <input type="number" id="height" value="480" readonly style="background: #f0f0f0;">
-                    </div>
-                    <div class="control-group">
-                        <button class="btn btn-secondary" onclick="resetCrop()" style="padding: 8px;">🔄 重置裁剪</button>
-                        <button class="btn btn-secondary" onclick="fitToScreen()" style="padding: 8px; margin-top: 5px;">📐 适应屏幕</button>
-                    </div>
-                    </div>
-                </div>
-                <input type="hidden" id="offsetX" value="0">
-                <input type="hidden" id="offsetY" value="0">
-                
-                <!-- 文本模式面板 -->
-                <div id="textModePanel" style="display: none;">
-                    <div class="section-title" style="margin-top: 15px;">文字设置</div>
-                    
-                    <div class="controls">
-                        <div class="control-group">
-                            <label>添加文字:</label>
-                            <input type="text" id="newTextContent" placeholder="输入文字内容" 
-                                   style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                        <div class="form-row">
+                            <button class="btn btn-secondary" onclick="fitToScreen()" style="flex:1">📐 适应</button>
+                            <button class="btn btn-secondary" onclick="resetCrop()" style="flex:1">🔄 重置</button>
                         </div>
-                        <div class="control-group">
-                            <label>字体大小:</label>
-                            <input type="number" id="newTextSize" value="48" min="12" max="200"
-                                   style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                        </div>
-                        <div class="control-group">
-                            <label>文字颜色:</label>
-                            <select id="newTextColor" style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                                <option value="black">⬛ 黑色</option>
-                                <option value="red">🟥 红色</option>
-                                <option value="white">⬜ 白色</option>
-                            </select>
-                        </div>
-                        <button class="btn btn-primary" onclick="addTextItem()" style="padding: 10px;">➕ 添加文字</button>
-                        
-                        <div class="section-title" style="margin-top: 20px;">文字列表</div>
-                        <div id="textItemsList" style="max-height: 200px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 5px; padding: 10px; background: white;">
-                            <p style="color: #888; text-align: center;">暂无文字</p>
-                        </div>
-                        
-                        <div class="control-group" style="margin-top: 15px;">
-                            <label>背景颜色:</label>
-                            <select id="textBgColor" style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;" onchange="renderTextCanvas()">
-                                <option value="white">⬜ 白色</option>
-                                <option value="black">⬛ 黑色</option>
-                            </select>
-                        </div>
-                        
-                        <button class="btn btn-secondary" onclick="clearAllText()" style="padding: 8px; margin-top: 10px;">🗑️ 清空所有文字</button>
                     </div>
                 </div>
                 
-                <!-- 图文混合模式面板 -->
-                <div id="mixedModePanel" style="display: none;">
-                    <div class="section-title" style="margin-top: 15px;">图片缩放</div>
-                    <div class="controls">
-                        <div class="control-group">
-                            <label>缩放:</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="range" id="mixedScaleSlider" min="10" max="300" value="100" 
-                                       style="flex: 1;" oninput="updateMixedScale()">
-                                <input type="number" id="mixedScaleInput" value="100" min="10" max="500" 
-                                       style="width: 60px; padding: 5px; border: 2px solid #e0e0e0; border-radius: 5px;"
-                                       onchange="updateMixedScaleFromInput()">
-                                <span>%</span>
-                            </div>
+                <!-- 文字模式控件 -->
+                <div id="textModeControls" class="hidden">
+                    <div class="panel-section">
+                        <h4>添加文字</h4>
+                        <div class="form-group">
+                            <label>文字内容</label>
+                            <input type="text" id="newTextContent" placeholder="输入文字...">
                         </div>
-                        <button class="btn btn-secondary" onclick="fitMixedToScreen()" style="padding: 8px;">📐 适应屏幕</button>
-                    </div>
-                    
-                    <div class="section-title" style="margin-top: 15px;">添加文字</div>
-                    <div class="controls">
-                        <div class="control-group">
-                            <label>文字内容:</label>
-                            <input type="text" id="mixedTextContent" placeholder="输入文字内容" 
-                                   style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                        </div>
-                        <div style="display: flex; gap: 10px;">
-                            <div class="control-group" style="flex: 1;">
-                                <label>大小:</label>
-                                <input type="number" id="mixedTextSize" value="36" min="12" max="200"
-                                       style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>大小</label>
+                                <input type="number" id="newTextSize" value="48" min="12" max="200">
                             </div>
-                            <div class="control-group" style="flex: 1;">
-                                <label>颜色:</label>
-                                <select id="mixedTextColor" style="width: 100%; padding: 8px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                            <div class="form-group">
+                                <label>颜色</label>
+                                <select id="newTextColor">
                                     <option value="black">⬛ 黑</option>
                                     <option value="red">🟥 红</option>
                                     <option value="white">⬜ 白</option>
                                 </select>
                             </div>
                         </div>
-                        <button class="btn btn-primary" onclick="addMixedTextItem()" style="padding: 10px;">➕ 添加文字</button>
-                        
-                        <div class="section-title" style="margin-top: 15px;">文字列表</div>
-                        <div id="mixedTextItemsList" style="max-height: 150px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 5px; padding: 10px; background: white;">
-                            <p style="color: #888; text-align: center;">暂无文字</p>
+                        <button class="btn btn-primary" onclick="addTextItem()" style="width:100%">➕ 添加文字</button>
+                    </div>
+                    
+                    <div class="panel-section">
+                        <h4>文字列表</h4>
+                        <div class="text-list" id="textList">
+                            <div style="padding: 20px; text-align: center; color: var(--text-light);">
+                                暂无文字
+                            </div>
                         </div>
-                        
-                        <button class="btn btn-secondary" onclick="clearMixedText()" style="padding: 8px; margin-top: 10px;">🗑️ 清空文字</button>
+                    </div>
+                    
+                    <div class="panel-section">
+                        <div class="form-group">
+                            <label>背景颜色</label>
+                            <select id="textBgColor" onchange="renderCanvas()">
+                                <option value="white">⬜ 白色</option>
+                                <option value="black">⬛ 黑色</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-secondary" onclick="clearAllText()" style="width:100%">🗑️ 清空文字</button>
                     </div>
                 </div>
                 
-                <div class="section-title" style="margin-top: 25px;">处理模式</div>
-                
-                <div class="processing-options">
-                    <label style="font-weight: bold; color: #495057; margin-bottom: 10px; display: block;">
-                        黑白屏：
-                    </label>
-                    <label>
-                        <input type="radio" name="processType" value="dither_mono">
-                        Dither 抖动（黑白）
-                    </label>
-                    <label>
-                        <input type="radio" name="processType" value="level_mono">
-                        Level 阈值（黑白）
-                    </label>
+                <!-- 图文混合模式控件 -->
+                <div id="mixedModeControls" class="hidden">
+                    <div class="panel-section">
+                        <h4>图片</h4>
+                        <div class="drop-zone" id="mixedDropZone">
+                            <div class="icon">📁</div>
+                            <p>拖拽图片到这里</p>
+                            <input type="file" id="mixedFileInput" class="hidden" accept="image/*">
+                        </div>
+                        <div class="form-group">
+                            <label>缩放</label>
+                            <div class="slider-group">
+                                <input type="range" id="mixedScaleSlider" min="10" max="300" value="100" oninput="updateMixedScale()">
+                                <input type="number" id="mixedScaleInput" value="100">
+                                <span>%</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary" onclick="fitMixedToScreen()" style="width:100%">📐 适应屏幕</button>
+                    </div>
                     
-                    <label style="font-weight: bold; color: #dc3545; margin: 15px 0 10px 0; display: block;">
-                        三色屏（黑白红）：
-                    </label>
-                    <label>
-                        <input type="radio" name="processType" value="tricolor_dither" checked>
-                        Dither 抖动（三色）⭐
-                    </label>
-                    <label>
-                        <input type="radio" name="processType" value="tricolor_level">
-                        Level 阈值（三色）
-                    </label>
+                    <div class="panel-section">
+                        <h4>叠加文字</h4>
+                        <div class="form-group">
+                            <label>文字</label>
+                            <input type="text" id="mixedTextContent" placeholder="输入文字...">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>大小</label>
+                                <input type="number" id="mixedTextSize" value="36">
+                            </div>
+                            <div class="form-group">
+                                <label>颜色</label>
+                                <select id="mixedTextColor">
+                                    <option value="black">⬛</option>
+                                    <option value="red">🟥</option>
+                                    <option value="white">⬜</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" onclick="addMixedTextItem()" style="width:100%">➕ 添加</button>
+                    </div>
+                    
+                    <div class="panel-section">
+                        <div class="text-list" id="mixedTextList" style="max-height: 120px;">
+                            <div style="padding: 15px; text-align: center; color: var(--text-light);">
+                                暂无文字
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary" onclick="clearMixedText()" style="width:100%; margin-top: 10px;">🗑️ 清空</button>
+                    </div>
                 </div>
                 
-                <div class="section-title" style="margin-top: 25px;">操作</div>
-                <button class="btn btn-primary" onclick="processImage()">处理图片</button>
-                <button class="btn btn-success" onclick="uploadToDevice()">上传到设备</button>
-                <button class="btn btn-secondary" style="background: #6c757d;" onclick="showDeviceCode()">🔢 显示设备码</button>
+                <!-- 模板模式控件 -->
+                <div id="templateModeControls" class="hidden">
+                    <div class="panel-section">
+                        <h4>选择模板</h4>
+                        <div class="template-grid" id="templateGrid">
+                            <!-- 模板将动态加载 -->
+                        </div>
+                    </div>
+                </div>
             </div>
             
-            <div class="content-area">
-                <div id="dropZone" class="drop-zone">
-                    <p>📁 拖拽图片到这里</p>
-                    <p>或</p>
-                    <input type="file" id="fileInput" class="hidden" accept="image/*">
-                    <button class="btn btn-secondary" style="width: auto; padding: 10px 30px;" onclick="document.getElementById('fileInput').click()">选择图片</button>
+            <!-- 处理面板 -->
+            <div class="panel-content hidden" id="processPanel">
+                <div class="panel-section">
+                    <h4>处理模式</h4>
+                    <div class="process-options">
+                        <label class="process-option">
+                            <input type="radio" name="processType" value="dither_mono">
+                            <span>抖动算法（黑白）</span>
+                        </label>
+                        <label class="process-option">
+                            <input type="radio" name="processType" value="level_mono">
+                            <span>阈值算法（黑白）</span>
+                        </label>
+                        <label class="process-option active">
+                            <input type="radio" name="processType" value="tricolor_dither" checked>
+                            <span>抖动算法（三色）⭐</span>
+                        </label>
+                        <label class="process-option">
+                            <input type="radio" name="processType" value="tricolor_level">
+                            <span>阈值算法（三色）</span>
+                        </label>
+                    </div>
                 </div>
                 
-                <div class="image-container" style="flex-direction: column;">
-                    <!-- 图片模式编辑区 -->
-                    <div class="image-box" id="imageEditorBox">
-                        <h3>裁剪编辑器 <span style="font-weight: normal; font-size: 0.8em; color: #888;">（拖动裁剪框调整位置）</span></h3>
-                        <div class="image-display" id="cropContainer" style="position: relative; overflow: hidden; background: #333; cursor: move;">
-                            <canvas id="sourceCanvas"></canvas>
-                            <div id="cropBox" style="
-                                position: absolute;
-                                border: 2px dashed #ff0;
-                                background: rgba(255,255,0,0.1);
-                                cursor: move;
-                                display: none;
-                                box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
-                            "></div>
-                            <img id="sourceImage" style="display:none;">
-                        </div>
+                <div class="panel-section">
+                    <!-- 预览按钮：内部会自动处理并输出预览图 -->
+                    <div style="margin-bottom: 15px;">
+                        <button class="btn btn-primary" onclick="previewPage()" style="width: 100%;">👁️ 处理并预览</button>
                     </div>
-                    
-                    <!-- 文字模式编辑区 -->
-                    <div class="image-box" id="textEditorBox" style="display: none;">
-                        <h3>文字编辑器 <span style="font-weight: normal; font-size: 0.8em; color: #888;">（拖动文字调整位置）</span></h3>
-                        <div class="image-display" id="textContainer" style="position: relative; overflow: hidden; background: #f0f0f0;">
-                            <canvas id="textCanvas"></canvas>
-                        </div>
-                    </div>
-                    
-                    <!-- 图文混合模式编辑区 -->
-                    <div class="image-box" id="mixedEditorBox" style="display: none;">
-                        <h3>图文编辑器 <span style="font-weight: normal; font-size: 0.8em; color: #888;">（拖动调整图片/文字位置）</span></h3>
-                        <div class="image-display" id="mixedContainer" style="position: relative; overflow: hidden; background: #f0f0f0;">
-                            <canvas id="mixedCanvas" style="cursor: grab;"></canvas>
-                        </div>
-                    </div>
-                    
-                    <div class="image-box">
-                        <h3>处理后预览 <span style="font-weight: normal; font-size: 0.8em; color: #888;">（实际发送到屏幕的图像）</span></h3>
-                        <div class="image-display">
-                            <canvas id="processedCanvas"></canvas>
-                        </div>
+                    <h4>预览</h4>
+                    <div style="border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #333;">
+                        <canvas id="processedCanvas" style="width: 100%; display: block;"></canvas>
                     </div>
                 </div>
             </div>
         </div>
-        
-        <div class="progress-container" id="progressContainer" style="display: none; padding: 0 30px; margin-bottom: 10px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                <span id="progressLabel">上传进度</span>
-                <span id="progressPercent">0%</span>
-            </div>
-            <div style="background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden;">
-                <div id="progressBar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100%; width: 0%; transition: width 0.3s; border-radius: 10px;"></div>
-            </div>
-        </div>
-        
-        <div class="status-bar" id="statusBar">
-            就绪
+    </div>
+    
+    <!-- 底部状态栏 -->
+    <div class="status-bar">
+        <span id="statusText">就绪</span>
+        <span id="canvasInfo">画布: 800×480</span>
+    </div>
+    
+    <!-- 进度条 -->
+    <div class="progress-overlay" id="progressOverlay">
+        <div class="progress-label" id="progressLabel">上传中...</div>
+        <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progressBar" style="width: 0%"></div>
         </div>
     </div>
-
+    
+    <!-- 新建页面模态框 -->
+    <div class="modal-overlay" id="newPageModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>新建页面</h3>
+                <button class="modal-close" onclick="hideNewPageModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>页面名称</label>
+                    <input type="text" id="newPageName" placeholder="输入页面名称...">
+                </div>
+                <h4 style="margin: 20px 0 15px; color: var(--text-dark);">选择模板</h4>
+                <div class="template-grid" id="modalTemplateGrid">
+                    <!-- 模板将动态加载 -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideNewPageModal()">取消</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 页面列表管理模态框 -->
+    <div class="modal-overlay" id="pageListModal">
+        <div class="modal" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3>页面列表管理</h3>
+                <button class="modal-close" onclick="hidePageListModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-light); margin-bottom: 15px;">
+                    创建页面列表，设备可以循环显示列表中的页面
+                </p>
+                <div style="display: flex; gap: 20px;">
+                    <div style="flex: 1;">
+                        <h4 style="margin-bottom: 10px;">页面列表</h4>
+                        <div id="pageListsContainer" style="border: 1px solid var(--border); border-radius: 8px; min-height: 200px;">
+                            <!-- 页面列表将动态加载 -->
+                        </div>
+                        <button class="btn btn-primary" onclick="createPageList()" style="margin-top: 10px;">+ 新建列表</button>
+                    </div>
+                    <div style="flex: 1;">
+                        <h4 style="margin-bottom: 10px;">所有页面</h4>
+                        <div id="allPagesContainer" style="border: 1px solid var(--border); border-radius: 8px; min-height: 200px;">
+                            <!-- 所有页面将动态加载 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hidePageListModal()">关闭</button>
+                <button class="btn btn-success" onclick="savePageLists()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 隐藏的设备ID -->
+    <input type="hidden" id="deviceId">
+    <input type="hidden" id="width" value="800">
+    <input type="hidden" id="height" value="480">
+    
     <script src="app.js"></script>
+    <script src="editor.js"></script>
 </body>
 </html>

@@ -8,7 +8,10 @@ import os
 import json
 import time
 import threading
+import hashlib
+import secrets
 from datetime import datetime
+from functools import wraps
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -26,24 +29,42 @@ CORS(app)  # 允许跨域请求
 # ==================== MongoDB 连接 ====================
 mongo_client = None
 db = None
+users_collection = None
 devices_collection = None
 device_status_collection = None
+pages_collection = None
+page_lists_collection = None
 
 def connect_mongodb():
     """连接 MongoDB"""
-    global mongo_client, db, devices_collection, device_status_collection
+    global mongo_client, db, users_collection, devices_collection, device_status_collection
+    global pages_collection, page_lists_collection
     try:
         mongo_client = MongoClient(Config.MONGODB_URI, serverSelectionTimeoutMS=5000)
         # 测试连接
         mongo_client.server_info()
         db = mongo_client[Config.MONGODB_DB]
+        users_collection = db['users']
         devices_collection = db['devices']
         device_status_collection = db['device_status']
+        pages_collection = db['pages']
+        page_lists_collection = db['page_lists']
         
         # 创建索引
+        users_collection.create_index('username', unique=True)
+        users_collection.create_index('token', unique=True, sparse=True)
+
         devices_collection.create_index('deviceId', unique=True)
+        devices_collection.create_index('owner')
+
         device_status_collection.create_index('deviceId', unique=True)
         device_status_collection.create_index('lastSeen')
+
+        pages_collection.create_index('deviceId')
+        pages_collection.create_index([('deviceId', 1), ('name', 1)])
+
+        page_lists_collection.create_index('deviceId')
+        page_lists_collection.create_index([('deviceId', 1), ('isActive', 1)])
         
         print(f'✅ Connected to MongoDB: {Config.MONGODB_URI}')
         print(f'📊 Database: {Config.MONGODB_DB}')
@@ -56,6 +77,140 @@ def connect_mongodb():
 # ==================== MQTT 连接 ====================
 mqtt_client = None
 online_devices = {}  # 内存缓存
+
+# ==================== 用户认证工具函数 ====================
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+def generate_token() -> str:
+    return secrets.token_hex(32)
+
+def get_current_user():
+    """根据 Authorization: Bearer <token> 获取当前用户"""
+    global users_collection
+    if users_collection is None:
+        return None
+
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return None
+    token = auth_header[7:].strip()
+    if not token:
+        return None
+
+    user = users_collection.find_one({'token': token})
+    return user
+
+def login_required(f):
+    """需要登录的装饰器"""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+        # 将用户对象挂到 request 上，后续处理使用
+        request.user = user
+        return f(*args, **kwargs)
+    return wrapper
+
+def ensure_device_owner(device_id: str, user) -> bool:
+    """检查设备是否属于当前用户"""
+    if devices_collection is None or not user:
+        return False
+    owner = user.get('username')
+    if not owner:
+        return False
+    device = devices_collection.find_one({'deviceId': device_id, 'owner': owner})
+    return device is not None
+
+# ==================== API: 用户注册 / 登录 ====================
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    """用户注册"""
+    global users_collection
+    if users_collection is None:
+        return jsonify({'success': False, 'error': 'Database not connected'}), 500
+
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+
+    if not username or not password:
+        return jsonify({'success': False, 'error': '用户名和密码不能为空'}), 400
+
+    if len(username) < 3 or len(password) < 4:
+        return jsonify({'success': False, 'error': '用户名或密码太短'}), 400
+
+    try:
+        users_collection.insert_one({
+            'username': username,
+            'passwordHash': hash_password(password),
+            'createdAt': datetime.utcnow()
+        })
+        return jsonify({'success': True, 'message': '注册成功'})
+    except DuplicateKeyError:
+        return jsonify({'success': False, 'error': '用户名已存在'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """用户登录，返回 token"""
+    global users_collection
+    if users_collection is None:
+        return jsonify({'success': False, 'error': 'Database not connected'}), 500
+
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+
+    if not username or not password:
+        return jsonify({'success': False, 'error': '用户名和密码不能为空'}), 400
+
+    user = users_collection.find_one({'username': username})
+    if not user or user.get('passwordHash') != hash_password(password):
+        return jsonify({'success': False, 'error': '用户名或密码错误'}), 400
+
+    token = generate_token()
+    users_collection.update_one(
+        {'_id': user['_id']},
+        {'$set': {'token': token, 'lastLoginAt': datetime.utcnow()}}
+    )
+
+    return jsonify({
+        'success': True,
+        'token': token,
+        'user': {'username': username}
+    })
+
+@app.route('/api/auth/logout', methods=['POST'])
+@login_required
+def logout():
+    """退出登录"""
+    global users_collection
+    user = getattr(request, 'user', None)
+    if not user or users_collection is None:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+    users_collection.update_one(
+        {'_id': user['_id']},
+        {'$unset': {'token': ''}}
+    )
+    return jsonify({'success': True, 'message': 'Logged out'})
+
+@app.route('/api/auth/me', methods=['GET'])
+@login_required
+def me():
+    """获取当前登录用户信息"""
+    user = getattr(request, 'user', None)
+    return jsonify({
+        'success': True,
+        'user': {
+            'username': user.get('username')
+        }
+    })
 
 def on_mqtt_connect(client, userdata, flags, rc):
     """MQTT 连接回调"""
@@ -142,22 +297,32 @@ def publish_mqtt(topic, payload):
 # ==================== API: 设备管理 ====================
 
 @app.route('/api/devices/list', methods=['GET'])
+@login_required
 def get_devices_list():
-    """获取所有已注册设备列表"""
+    """获取当前用户的设备列表"""
     try:
-        if devices_collection is None:
+        user = getattr(request, 'user', None)
+        if devices_collection is None or not user:
             return jsonify({'success': True, 'devices': []})
-        
-        devices = list(devices_collection.find({}, {'_id': 0}).sort('addedAt', -1))
+
+        owner = user.get('username')
+        devices = list(
+            devices_collection.find({'owner': owner}, {'_id': 0})
+            .sort('addedAt', -1)
+        )
         return jsonify({'success': True, 'devices': devices})
     except Exception as e:
         print(f'❌ Error fetching devices: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/devices/add', methods=['POST'])
+@login_required
 def add_device():
-    """添加设备"""
+    """为当前用户添加设备"""
     try:
+        user = getattr(request, 'user', None)
+        owner = user.get('username') if user else None
+
         data = request.get_json()
         device_id = data.get('deviceId', '').strip().upper()
         device_name = data.get('deviceName', '').strip()
@@ -173,13 +338,14 @@ def add_device():
         if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
             return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
         
-        if devices_collection is None:
+        if devices_collection is None or not owner:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
         # 添加设备
         device = {
             'deviceId': clean_id,
             'deviceName': device_name or clean_id,
+            'owner': owner,
             'addedAt': datetime.utcnow(),
             'createdAt': datetime.utcnow(),
             'updatedAt': datetime.utcnow()
@@ -204,13 +370,17 @@ def add_device():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/devices/<device_id>', methods=['DELETE'])
+@login_required
 def delete_device(device_id):
-    """删除设备"""
+    """删除当前用户的设备"""
     try:
-        if devices_collection is None:
+        user = getattr(request, 'user', None)
+        owner = user.get('username') if user else None
+
+        if devices_collection is None or not owner:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        result = devices_collection.delete_one({'deviceId': device_id})
+        result = devices_collection.delete_one({'deviceId': device_id, 'owner': owner})
         
         if result.deleted_count == 0:
             return jsonify({'success': False, 'error': 'Device not found'}), 404
@@ -229,13 +399,19 @@ def delete_device(device_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/devices', methods=['GET'])
+@login_required
 def get_devices_status():
-    """获取设备列表和状态"""
+    """获取当前用户的设备列表和状态"""
     try:
+        user = getattr(request, 'user', None)
+        owner = user.get('username') if user else None
+
         # 从数据库获取所有已注册的设备
         registered_devices = []
-        if devices_collection is not None:
-            registered_devices = list(devices_collection.find({}, {'_id': 0}))
+        if devices_collection is not None and owner:
+            registered_devices = list(
+                devices_collection.find({'owner': owner}, {'_id': 0})
+            )
         
         # 合并在线状态
         current_time = int(time.time() * 1000)
@@ -262,17 +438,461 @@ def get_devices_status():
         print(f'❌ Error fetching device status: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# ==================== API: 页面管理 ====================
+
+@app.route('/api/pages/list/<device_id>', methods=['GET'])
+@login_required
+def get_pages(device_id):
+    """获取设备的所有页面（仅限当前用户的设备）"""
+    try:
+        user = getattr(request, 'user', None)
+        if not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+
+        if pages_collection is None:
+            return jsonify({'success': True, 'pages': []})
+        
+        pages = list(pages_collection.find(
+            {'deviceId': device_id}, 
+            {'_id': 0}
+        ).sort('updatedAt', -1))
+        
+        # 转换日期
+        for page in pages:
+            if hasattr(page.get('createdAt'), 'isoformat'):
+                page['createdAt'] = page['createdAt'].isoformat()
+            if hasattr(page.get('updatedAt'), 'isoformat'):
+                page['updatedAt'] = page['updatedAt'].isoformat()
+        
+        return jsonify({'success': True, 'pages': pages})
+    except Exception as e:
+        print(f'❌ Error fetching pages: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/pages/save', methods=['POST'])
+@login_required
+def save_page():
+    """保存页面（仅限当前用户的设备）"""
+    try:
+        data = request.get_json()
+        device_id = data.get('deviceId')
+        page_id = data.get('pageId')
+        page_name = data.get('name', '未命名页面')
+        page_type = data.get('type', 'custom')  # custom, image, text, mixed, template
+        page_data = data.get('data', {})  # 页面内容数据
+        thumbnail = data.get('thumbnail', '')  # 缩略图 base64
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+
+        user = getattr(request, 'user', None)
+        if not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+        
+        if pages_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        now = datetime.utcnow()
+        
+        if page_id:
+            # 更新现有页面
+            result = pages_collection.update_one(
+                {'pageId': page_id, 'deviceId': device_id},
+                {'$set': {
+                    'name': page_name,
+                    'type': page_type,
+                    'data': page_data,
+                    'thumbnail': thumbnail,
+                    'updatedAt': now
+                }}
+            )
+            if result.matched_count == 0:
+                return jsonify({'success': False, 'error': 'Page not found'}), 404
+            
+            print(f'✅ Page updated: {page_id}')
+        else:
+            # 创建新页面
+            import uuid
+            page_id = str(uuid.uuid4())[:8]
+            
+            page = {
+                'pageId': page_id,
+                'deviceId': device_id,
+                'name': page_name,
+                'type': page_type,
+                'data': page_data,
+                'thumbnail': thumbnail,
+                'createdAt': now,
+                'updatedAt': now
+            }
+            pages_collection.insert_one(page)
+            print(f'✅ Page created: {page_id}')
+        
+        return jsonify({
+            'success': True, 
+            'pageId': page_id,
+            'message': 'Page saved'
+        })
+    except Exception as e:
+        print(f'❌ Error saving page: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/pages/<page_id>', methods=['GET'])
+@login_required
+def get_page(page_id):
+    """获取单个页面详情（仅限当前用户的设备）"""
+    try:
+        if pages_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        page = pages_collection.find_one({'pageId': page_id}, {'_id': 0})
+        if not page:
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+
+        # 校验设备归属
+        user = getattr(request, 'user', None)
+        device_id = page.get('deviceId')
+        if device_id and not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+        
+        # 转换日期
+        if hasattr(page.get('createdAt'), 'isoformat'):
+            page['createdAt'] = page['createdAt'].isoformat()
+        if hasattr(page.get('updatedAt'), 'isoformat'):
+            page['updatedAt'] = page['updatedAt'].isoformat()
+        
+        return jsonify({'success': True, 'page': page})
+    except Exception as e:
+        print(f'❌ Error fetching page: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/pages/<page_id>', methods=['DELETE'])
+@login_required
+def delete_page(page_id):
+    """删除页面（仅限当前用户的设备）"""
+    try:
+        if pages_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+
+        # 先找到页面，检查归属
+        page = pages_collection.find_one({'pageId': page_id})
+        if not page:
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+
+        user = getattr(request, 'user', None)
+        device_id = page.get('deviceId')
+        if device_id and not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+
+        result = pages_collection.delete_one({'pageId': page_id})
+        
+        # 从所有页面列表中移除该页面
+        if page_lists_collection is not None:
+            page_lists_collection.update_many(
+                {},
+                {'$pull': {'pages': {'pageId': page_id}}}
+            )
+        
+        print(f'✅ Page deleted: {page_id}')
+        return jsonify({'success': True, 'message': 'Page deleted'})
+    except Exception as e:
+        print(f'❌ Error deleting page: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ==================== API: 页面列表管理 ====================
+
+@app.route('/api/page-lists/list/<device_id>', methods=['GET'])
+@login_required
+def get_page_lists(device_id):
+    """获取设备的所有页面列表（仅限当前用户的设备）"""
+    try:
+        user = getattr(request, 'user', None)
+        if not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+
+        if page_lists_collection is None:
+            return jsonify({'success': True, 'pageLists': []})
+        
+        page_lists = list(page_lists_collection.find(
+            {'deviceId': device_id}, 
+            {'_id': 0}
+        ).sort('updatedAt', -1))
+        
+        # 转换日期
+        for pl in page_lists:
+            if hasattr(pl.get('createdAt'), 'isoformat'):
+                pl['createdAt'] = pl['createdAt'].isoformat()
+            if hasattr(pl.get('updatedAt'), 'isoformat'):
+                pl['updatedAt'] = pl['updatedAt'].isoformat()
+        
+        return jsonify({'success': True, 'pageLists': page_lists})
+    except Exception as e:
+        print(f'❌ Error fetching page lists: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/page-lists/save', methods=['POST'])
+@login_required
+def save_page_list():
+    """保存页面列表（仅限当前用户的设备）"""
+    try:
+        data = request.get_json()
+        device_id = data.get('deviceId')
+        list_id = data.get('listId')
+        list_name = data.get('name', '默认页面列表')
+        pages = data.get('pages', [])  # [{pageId, order}]
+        interval = data.get('interval', 60)  # 切换间隔(分钟)
+        is_active = data.get('isActive', False)
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+
+        user = getattr(request, 'user', None)
+        if not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+        
+        if page_lists_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        now = datetime.utcnow()
+        
+        # 如果设置为激活，先取消其他列表的激活状态
+        if is_active:
+            page_lists_collection.update_many(
+                {'deviceId': device_id},
+                {'$set': {'isActive': False}}
+            )
+        
+        if list_id:
+            # 更新现有列表
+            result = page_lists_collection.update_one(
+                {'listId': list_id, 'deviceId': device_id},
+                {'$set': {
+                    'name': list_name,
+                    'pages': pages,
+                    'interval': interval,
+                    'isActive': is_active,
+                    'updatedAt': now
+                }}
+            )
+            if result.matched_count == 0:
+                return jsonify({'success': False, 'error': 'Page list not found'}), 404
+            
+            print(f'✅ Page list updated: {list_id}')
+        else:
+            # 创建新列表
+            import uuid
+            list_id = str(uuid.uuid4())[:8]
+            
+            page_list = {
+                'listId': list_id,
+                'deviceId': device_id,
+                'name': list_name,
+                'pages': pages,
+                'interval': interval,
+                'isActive': is_active,
+                'createdAt': now,
+                'updatedAt': now
+            }
+            page_lists_collection.insert_one(page_list)
+            print(f'✅ Page list created: {list_id}')
+        
+        return jsonify({
+            'success': True, 
+            'listId': list_id,
+            'message': 'Page list saved'
+        })
+    except Exception as e:
+        print(f'❌ Error saving page list: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/page-lists/<list_id>', methods=['DELETE'])
+@login_required
+def delete_page_list(list_id):
+    """删除页面列表（仅限当前用户的设备）"""
+    try:
+        if page_lists_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+
+        # 找到列表，检查归属
+        page_list = page_lists_collection.find_one({'listId': list_id})
+        if not page_list:
+            return jsonify({'success': False, 'error': 'Page list not found'}), 404
+
+        user = getattr(request, 'user', None)
+        device_id = page_list.get('deviceId')
+        if device_id and not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+
+        result = page_lists_collection.delete_one({'listId': list_id})
+        
+        print(f'✅ Page list deleted: {list_id}')
+        return jsonify({'success': True, 'message': 'Page list deleted'})
+    except Exception as e:
+        print(f'❌ Error deleting page list: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/page-lists/active/<device_id>', methods=['GET'])
+@login_required
+def get_active_page_list(device_id):
+    """获取设备当前激活的页面列表（仅限当前用户的设备）"""
+    try:
+        user = getattr(request, 'user', None)
+        if not ensure_device_owner(device_id, user):
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
+
+        if page_lists_collection is None:
+            return jsonify({'success': True, 'pageList': None})
+        
+        page_list = page_lists_collection.find_one(
+            {'deviceId': device_id, 'isActive': True},
+            {'_id': 0}
+        )
+        
+        if page_list:
+            if hasattr(page_list.get('createdAt'), 'isoformat'):
+                page_list['createdAt'] = page_list['createdAt'].isoformat()
+            if hasattr(page_list.get('updatedAt'), 'isoformat'):
+                page_list['updatedAt'] = page_list['updatedAt'].isoformat()
+        
+        return jsonify({'success': True, 'pageList': page_list})
+    except Exception as e:
+        print(f'❌ Error fetching active page list: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ==================== API: 模板 ====================
+
+TEMPLATES = [
+    {
+        'templateId': 'clock',
+        'name': '时钟',
+        'icon': '🕐',
+        'description': '显示当前时间和日期',
+        'preview': '/templates/clock.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'clock',
+            'showDate': True,
+            'showWeekday': True,
+            'format24h': True
+        }
+    },
+    {
+        'templateId': 'weather',
+        'name': '天气',
+        'icon': '🌤️',
+        'description': '显示天气信息',
+        'preview': '/templates/weather.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'weather',
+            'city': '',
+            'showForecast': True
+        }
+    },
+    {
+        'templateId': 'calendar',
+        'name': '日历',
+        'icon': '📅',
+        'description': '显示日历和日程',
+        'preview': '/templates/calendar.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'calendar',
+            'showEvents': True
+        }
+    },
+    {
+        'templateId': 'todo',
+        'name': '待办事项',
+        'icon': '✅',
+        'description': '显示待办事项列表',
+        'preview': '/templates/todo.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'todo',
+            'items': []
+        }
+    },
+    {
+        'templateId': 'quote',
+        'name': '每日一言',
+        'icon': '💬',
+        'description': '显示励志名言或诗词',
+        'preview': '/templates/quote.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'quote',
+            'category': 'motivational'
+        }
+    },
+    {
+        'templateId': 'counter',
+        'name': '计数器',
+        'icon': '🔢',
+        'description': '显示倒计时或正计时',
+        'preview': '/templates/counter.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'counter',
+            'targetDate': '',
+            'title': '距离目标'
+        }
+    },
+    {
+        'templateId': 'qrcode',
+        'name': '二维码',
+        'icon': '📱',
+        'description': '显示自定义二维码',
+        'preview': '/templates/qrcode.png',
+        'defaultData': {
+            'type': 'template',
+            'template': 'qrcode',
+            'content': '',
+            'title': ''
+        }
+    },
+    {
+        'templateId': 'blank',
+        'name': '空白画布',
+        'icon': '⬜',
+        'description': '从空白开始自由创作',
+        'preview': '/templates/blank.png',
+        'defaultData': {
+            'type': 'custom',
+            'elements': []
+        }
+    }
+]
+
+@app.route('/api/templates', methods=['GET'])
+def get_templates():
+    """获取所有可用模板"""
+    return jsonify({'success': True, 'templates': TEMPLATES})
+
+@app.route('/api/templates/<template_id>', methods=['GET'])
+def get_template(template_id):
+    """获取单个模板详情"""
+    template = next((t for t in TEMPLATES if t['templateId'] == template_id), None)
+    if not template:
+        return jsonify({'success': False, 'error': 'Template not found'}), 404
+    return jsonify({'success': True, 'template': template})
+
 # ==================== API: EPD 控制 ====================
 
 @app.route('/api/epd/init', methods=['POST'])
+@login_required
 def epd_init():
-    """初始化 EPD"""
+    """初始化 EPD（仅限当前用户的设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     epd_type = data.get('epdType')
     
     if not device_id or not epd_type:
         return jsonify({'success': False, 'error': 'Missing deviceId or epdType'}), 400
+
+    user = getattr(request, 'user', None)
+    if not ensure_device_owner(device_id, user):
+        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
     topic = f'dev/{device_id}/down/epd'
     payload = {
@@ -290,8 +910,9 @@ def epd_init():
         return jsonify({'success': False, 'error': error}), 500
 
 @app.route('/api/epd/load', methods=['POST'])
+@login_required
 def epd_load():
-    """加载图片数据"""
+    """加载图片数据（仅限当前用户的设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     image_data = data.get('data')
@@ -299,6 +920,10 @@ def epd_load():
     
     if not device_id or not image_data:
         return jsonify({'success': False, 'error': 'Missing deviceId or data'}), 400
+
+    user = getattr(request, 'user', None)
+    if not ensure_device_owner(device_id, user):
+        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
     topic = f'dev/{device_id}/down/epd'
     payload = {
@@ -317,13 +942,18 @@ def epd_load():
         return jsonify({'success': False, 'error': error}), 500
 
 @app.route('/api/epd/next', methods=['POST'])
+@login_required
 def epd_next():
-    """切换数据通道"""
+    """切换数据通道（仅限当前用户的设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     
     if not device_id:
         return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+
+    user = getattr(request, 'user', None)
+    if not ensure_device_owner(device_id, user):
+        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
     topic = f'dev/{device_id}/down/epd'
     payload = {
@@ -340,13 +970,18 @@ def epd_next():
         return jsonify({'success': False, 'error': error}), 500
 
 @app.route('/api/epd/show-device-code', methods=['POST'])
+@login_required
 def epd_show_device_code():
-    """显示设备码"""
+    """显示设备码（仅限当前用户的设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     
     if not device_id:
         return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+
+    user = getattr(request, 'user', None)
+    if not ensure_device_owner(device_id, user):
+        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
     topic = f'dev/{device_id}/down/epd'
     payload = {
@@ -363,13 +998,18 @@ def epd_show_device_code():
         return jsonify({'success': False, 'error': error}), 500
 
 @app.route('/api/epd/show', methods=['POST'])
+@login_required
 def epd_show():
-    """显示图片"""
+    """显示图片（仅限当前用户的设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     
     if not device_id:
         return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+
+    user = getattr(request, 'user', None)
+    if not ensure_device_owner(device_id, user):
+        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
     topic = f'dev/{device_id}/down/epd'
     payload = {

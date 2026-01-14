@@ -1,6 +1,7 @@
 flask==3.0.0
 flask-cors==4.0.0
-pymongo==4.6.1
+# 不固定 pymongo 具体小版本，避免镜像源缺少 4.6.1 导致构建失败
+pymongo
 paho-mqtt==1.6.1
 python-dotenv==1.0.0
 gunicorn==21.2.0

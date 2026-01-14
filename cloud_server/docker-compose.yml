@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Flask 后端 API
   backend:
     build: ./backend
     container_name: esp32-backend
@@ -15,12 +16,23 @@ services:
       - MONGODB_URI=mongodb://mongo_miXkxe:mongo_NQf5WW@8.135.238.216:27017/esp32_epd?authSource=admin
       - MONGODB_DB=esp32_epd
     restart: unless-stopped
+    networks:
+      - esp32-network
 
+  # Nginx 前端 + 反向代理
   frontend:
     build: ./frontend
     container_name: esp32-frontend
     ports:
+      # 宿主机 3000 -> 容器 80，供外部通过 3000 端口访问
       - "3000:80"
     depends_on:
       - backend
     restart: unless-stopped
+    networks:
+      - esp32-network
+
+networks:
+  esp32-network:
+    driver: bridge
+

@@ -10,7 +10,7 @@ import time
 import threading
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify
@@ -34,11 +34,12 @@ devices_collection = None
 device_status_collection = None
 pages_collection = None
 page_lists_collection = None
+pairing_codes_collection = None
 
 def connect_mongodb():
     """连接 MongoDB"""
     global mongo_client, db, users_collection, devices_collection, device_status_collection
-    global pages_collection, page_lists_collection
+    global pages_collection, page_lists_collection, pairing_codes_collection
     try:
         mongo_client = MongoClient(Config.MONGODB_URI, serverSelectionTimeoutMS=5000)
         # 测试连接
@@ -49,6 +50,7 @@ def connect_mongodb():
         device_status_collection = db['device_status']
         pages_collection = db['pages']
         page_lists_collection = db['page_lists']
+        pairing_codes_collection = db['pairing_codes']
         
         # 创建索引
         users_collection.create_index('username', unique=True)
@@ -56,6 +58,7 @@ def connect_mongodb():
 
         devices_collection.create_index('deviceId', unique=True)
         devices_collection.create_index('owner')
+        devices_collection.create_index('claimed')  # 绑定状态索引
 
         device_status_collection.create_index('deviceId', unique=True)
         device_status_collection.create_index('lastSeen')
@@ -65,6 +68,10 @@ def connect_mongodb():
 
         page_lists_collection.create_index('deviceId')
         page_lists_collection.create_index([('deviceId', 1), ('isActive', 1)])
+        
+        # 配对码集合索引：deviceId唯一索引，expiresAt的TTL索引（自动过期清理）
+        pairing_codes_collection.create_index('deviceId', unique=True)
+        pairing_codes_collection.create_index('expiresAt', expireAfterSeconds=0)  # TTL索引，0秒后过期
         
         print(f'✅ Connected to MongoDB: {Config.MONGODB_URI}')
         print(f'📊 Database: {Config.MONGODB_DB}')
@@ -341,11 +348,12 @@ def add_device():
         if devices_collection is None or not owner:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        # 添加设备
+        # 添加设备（自动绑定）
         device = {
             'deviceId': clean_id,
             'deviceName': device_name or clean_id,
             'owner': owner,
+            'claimed': True,  # 添加设备时自动绑定
             'addedAt': datetime.utcnow(),
             'createdAt': datetime.utcnow(),
             'updatedAt': datetime.utcnow()
@@ -353,8 +361,25 @@ def add_device():
         
         try:
             devices_collection.insert_one(device)
+            # 删除可能存在的配对码
+            if pairing_codes_collection is not None:
+                pairing_codes_collection.delete_one({'deviceId': clean_id})
         except DuplicateKeyError:
-            return jsonify({'success': False, 'error': 'Device already exists'}), 400
+            # 如果设备已存在，更新为已绑定状态
+            devices_collection.update_one(
+                {'deviceId': clean_id},
+                {
+                    '$set': {
+                        'owner': owner,
+                        'deviceName': device_name or clean_id,
+                        'claimed': True,
+                        'updatedAt': datetime.utcnow()
+                    }
+                }
+            )
+            # 删除可能存在的配对码
+            if pairing_codes_collection is not None:
+                pairing_codes_collection.delete_one({'deviceId': clean_id})
         
         print(f'✅ Device added: {clean_id}')
         # 返回时去掉 _id
@@ -425,7 +450,8 @@ def get_devices_status():
                 'deviceId': device_id,
                 'deviceName': device.get('deviceName', device_id),
                 'addedAt': device.get('addedAt').isoformat() if hasattr(device.get('addedAt'), 'isoformat') else device.get('addedAt'),
-                'online': is_online
+                'online': is_online,
+                'claimed': device.get('claimed', False)  # 添加绑定状态
             }
             
             if status:
@@ -436,6 +462,270 @@ def get_devices_status():
         return jsonify({'success': True, 'devices': devices})
     except Exception as e:
         print(f'❌ Error fetching device status: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ==================== API: 设备绑定状态查询和绑定 ====================
+
+@app.route('/api/device/status', methods=['POST'])
+def device_status():
+    """设备查询绑定状态（无需登录，设备调用）"""
+    try:
+        data = request.get_json() or {}
+        device_id = (data.get('deviceId') or '').strip().upper()
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+        
+        # 清理设备ID（去掉分隔符）
+        clean_id = device_id.replace('-', '').replace(':', '')
+        
+        # 验证格式
+        import re
+        if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
+            return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
+        
+        if devices_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        # 查询设备绑定状态
+        device = devices_collection.find_one({'deviceId': clean_id})
+        claimed = device is not None and device.get('claimed', False)
+        
+        response = {
+            'claimed': claimed
+        }
+        
+        # 如果未绑定，生成或返回配对码
+        if not claimed:
+            # 检查是否已有有效的配对码
+            pairing_code = None
+            expires_at = None
+            
+            if pairing_codes_collection is not None:
+                pairing_doc = pairing_codes_collection.find_one({'deviceId': clean_id})
+                if pairing_doc:
+                    pairing_code = pairing_doc.get('code')
+                    expires_at = pairing_doc.get('expiresAt')
+            
+            # 如果没有有效配对码，生成新的
+            if not pairing_code or (expires_at and expires_at < datetime.utcnow()):
+                # 生成6位数字配对码
+                import random
+                pairing_code = f"{random.randint(100000, 999999)}"
+                expires_at = datetime.utcnow() + timedelta(hours=24)  # 24小时有效期
+                
+                # 保存配对码
+                if pairing_codes_collection is not None:
+                    pairing_codes_collection.update_one(
+                        {'deviceId': clean_id},
+                        {
+                            '$set': {
+                                'code': pairing_code,
+                                'expiresAt': expires_at,
+                                'createdAt': datetime.utcnow()
+                            }
+                        },
+                        upsert=True
+                    )
+            
+            # 计算剩余有效期（秒）
+            if expires_at:
+                expires_in = int((expires_at - datetime.utcnow()).total_seconds())
+                if expires_in < 0:
+                    expires_in = 0
+            else:
+                expires_in = 86400  # 默认24小时
+            
+            response['pairingCode'] = pairing_code
+            response['expiresIn'] = expires_in
+        
+        # 如果已绑定，返回图片信息（如果有）
+        if claimed and device:
+            # 可以在这里添加图片URL和版本信息
+            # 例如从pages_collection获取最新图片
+            if pages_collection is not None:
+                latest_page = pages_collection.find_one(
+                    {'deviceId': clean_id},
+                    sort=[('updatedAt', -1)]
+                )
+                if latest_page:
+                    # 这里可以根据实际需求返回图片URL
+                    # response['imageUrl'] = latest_page.get('imageUrl')
+                    response['imageVersion'] = latest_page.get('version', 0)
+        
+        return jsonify(response)
+    except Exception as e:
+        print(f'❌ Error querying device status: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device/claim', methods=['POST'])
+@login_required
+def device_claim():
+    """用户绑定设备（需要登录）"""
+    try:
+        user = getattr(request, 'user', None)
+        owner = user.get('username') if user else None
+        
+        if not owner:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+        
+        data = request.get_json() or {}
+        device_id = (data.get('deviceId') or '').strip().upper()
+        pairing_code = (data.get('pairingCode') or '').strip()  # 可选：配对码验证
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+        
+        # 清理设备ID
+        clean_id = device_id.replace('-', '').replace(':', '')
+        
+        # 验证格式
+        import re
+        if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
+            return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
+        
+        if devices_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        # 验证配对码（如果提供了）
+        if pairing_code:
+            if pairing_codes_collection is None:
+                return jsonify({'success': False, 'error': 'Pairing code verification unavailable'}), 500
+            
+            pairing_doc = pairing_codes_collection.find_one({'deviceId': clean_id})
+            if not pairing_doc:
+                return jsonify({'success': False, 'error': 'Pairing code not found'}), 404
+            
+            if pairing_doc.get('code') != pairing_code:
+                return jsonify({'success': False, 'error': 'Invalid pairing code'}), 400
+            
+            # 检查是否过期
+            expires_at = pairing_doc.get('expiresAt')
+            if expires_at and expires_at < datetime.utcnow():
+                return jsonify({'success': False, 'error': 'Pairing code expired'}), 400
+        
+        # 检查设备是否已被其他用户绑定
+        existing_device = devices_collection.find_one({'deviceId': clean_id})
+        if existing_device:
+            existing_owner = existing_device.get('owner')
+            existing_claimed = existing_device.get('claimed', False)
+            
+            if existing_claimed and existing_owner != owner:
+                return jsonify({'success': False, 'error': 'Device already claimed by another user'}), 403
+            
+            # 如果是同一用户，更新绑定状态
+            if existing_owner == owner:
+                devices_collection.update_one(
+                    {'deviceId': clean_id},
+                    {
+                        '$set': {
+                            'claimed': True,
+                            'updatedAt': datetime.utcnow()
+                        }
+                    }
+                )
+                print(f'✅ Device re-claimed: {clean_id} by {owner}')
+            else:
+                # 更新所有者
+                devices_collection.update_one(
+                    {'deviceId': clean_id},
+                    {
+                        '$set': {
+                            'owner': owner,
+                            'claimed': True,
+                            'updatedAt': datetime.utcnow()
+                        }
+                    }
+                )
+                print(f'✅ Device claimed: {clean_id} by {owner}')
+        else:
+            # 新设备，创建记录
+            device_name = data.get('deviceName', '').strip() or clean_id
+            device = {
+                'deviceId': clean_id,
+                'deviceName': device_name,
+                'owner': owner,
+                'claimed': True,
+                'addedAt': datetime.utcnow(),
+                'createdAt': datetime.utcnow(),
+                'updatedAt': datetime.utcnow()
+            }
+            devices_collection.insert_one(device)
+            print(f'✅ New device claimed: {clean_id} by {owner}')
+        
+        # 删除配对码（已使用）
+        if pairing_codes_collection is not None:
+            pairing_codes_collection.delete_one({'deviceId': clean_id})
+        
+        return jsonify({
+            'success': True,
+            'message': 'Device claimed successfully',
+            'deviceId': clean_id
+        })
+    except DuplicateKeyError:
+        return jsonify({'success': False, 'error': 'Device already exists'}), 400
+    except Exception as e:
+        print(f'❌ Error claiming device: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device/unbind', methods=['POST'])
+@login_required
+def device_unbind():
+    """解绑设备（需要登录，仅限设备所有者）"""
+    try:
+        user = getattr(request, 'user', None)
+        owner = user.get('username') if user else None
+        
+        if not owner:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+        
+        data = request.get_json() or {}
+        device_id = (data.get('deviceId') or '').strip().upper()
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
+        
+        # 清理设备ID
+        clean_id = device_id.replace('-', '').replace(':', '')
+        
+        if devices_collection is None:
+            return jsonify({'success': False, 'error': 'Database not connected'}), 500
+        
+        # 检查设备是否存在且属于当前用户
+        device = devices_collection.find_one({'deviceId': clean_id, 'owner': owner})
+        if not device:
+            return jsonify({'success': False, 'error': 'Device not found or no permission'}), 404
+        
+        # 解绑设备（设置claimed为False，但不删除设备记录）
+        devices_collection.update_one(
+            {'deviceId': clean_id},
+            {
+                '$set': {
+                    'claimed': False,
+                    'updatedAt': datetime.utcnow()
+                }
+            }
+        )
+        
+        # 删除配对码（如果有）
+        if pairing_codes_collection is not None:
+            pairing_codes_collection.delete_one({'deviceId': clean_id})
+        
+        print(f'✅ Device unbound: {clean_id} by {owner}')
+        
+        return jsonify({
+            'success': True,
+            'message': 'Device unbound successfully',
+            'deviceId': clean_id
+        })
+    except Exception as e:
+        print(f'❌ Error unbinding device: {e}')
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ==================== API: 页面管理 ====================

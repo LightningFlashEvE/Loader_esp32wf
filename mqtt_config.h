@@ -15,6 +15,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <HTTPClient.h>
 #include "buff.h"
 #include "epd.h"
 
@@ -41,6 +43,7 @@
 /* 全局变量 ----------------------------------------------------------------*/
 WiFiClient mqttWifiClient;
 PubSubClient mqttClient(mqttWifiClient);
+Preferences preferences;  // NVS持久化存储
 
 String deviceId;
 String topicDownBase;
@@ -54,6 +57,16 @@ bool deviceActivated = false;
 unsigned long deviceStartupTime = 0;
 const unsigned long STARTUP_WAIT_MS = 5000;  // 启动后等待5秒
 bool deviceCodeShown = false;
+
+// 设备绑定状态（本地持久化）
+bool deviceClaimed = false;
+const char* PREF_NAMESPACE = "device";
+const char* PREF_KEY_CLAIMED = "claimed";
+
+// 云端API配置
+#define CLOUD_API_HOST "8.135.238.216"  // 与MQTT_HOST保持一致
+#define CLOUD_API_PORT 5000  // Flask默认端口
+#define CLOUD_API_TIMEOUT_MS 5000  // HTTP请求超时时间
 
 /* 简单的5x7点阵字体 (数字0-9, 字母A-F) ------------------------------------*/
 const byte font5x7[][5] = {
@@ -224,12 +237,118 @@ String getDeviceIdFromMac() {
     return String(buf);
 }
 
+/* 读取本地持久化的claimed状态 ---------------------------------------------*/
+bool loadClaimedStatus() {
+    preferences.begin(PREF_NAMESPACE, true);  // 只读模式
+    bool claimed = preferences.getBool(PREF_KEY_CLAIMED, false);
+    preferences.end();
+    Serial.printf("📖 读取本地绑定状态: %s\n", claimed ? "已绑定" : "未绑定");
+    return claimed;
+}
+
+/* 保存本地持久化的claimed状态 ---------------------------------------------*/
+void saveClaimedStatus(bool claimed) {
+    preferences.begin(PREF_NAMESPACE, false);  // 读写模式
+    preferences.putBool(PREF_KEY_CLAIMED, claimed);
+    preferences.end();
+    Serial.printf("💾 保存本地绑定状态: %s\n", claimed ? "已绑定" : "未绑定");
+}
+
+/* 向云端查询设备绑定状态 -------------------------------------------------*/
+struct DeviceStatusResponse {
+    bool claimed;
+    bool hasPairingCode;
+    String pairingCode;
+    int expiresIn;  // 秒
+    String imageUrl;
+    int imageVersion;
+    bool success;
+    String error;
+};
+
+DeviceStatusResponse queryDeviceStatus() {
+    DeviceStatusResponse result = {false, false, "", 0, "", 0, false, ""};
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        result.error = "WiFi未连接";
+        return result;
+    }
+    
+    HTTPClient http;
+    String url = "http://" + String(CLOUD_API_HOST) + ":" + String(CLOUD_API_PORT) + "/api/device/status";
+    
+    Serial.printf("📡 查询绑定状态: %s\n", url.c_str());
+    
+    http.begin(url);
+    http.setTimeout(CLOUD_API_TIMEOUT_MS);
+    http.addHeader("Content-Type", "application/json");
+    
+    // 构建请求体
+    DynamicJsonDocument doc(256);
+    doc["deviceId"] = deviceId;
+    String requestBody;
+    serializeJson(doc, requestBody);
+    
+    int httpCode = http.POST(requestBody);
+    
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
+        String response = http.getString();
+        Serial.printf("✅ 云端响应: %s\n", response.c_str());
+        
+        DynamicJsonDocument respDoc(1024);
+        DeserializationError error = deserializeJson(respDoc, response);
+        
+        if (!error) {
+            result.success = true;
+            result.claimed = respDoc["claimed"].as<bool>();
+            
+            if (respDoc.containsKey("pairingCode")) {
+                result.hasPairingCode = true;
+                result.pairingCode = respDoc["pairingCode"].as<String>();
+                result.expiresIn = respDoc["expiresIn"].as<int>();
+            }
+            
+            if (respDoc.containsKey("imageUrl")) {
+                result.imageUrl = respDoc["imageUrl"].as<String>();
+            }
+            
+            if (respDoc.containsKey("imageVersion")) {
+                result.imageVersion = respDoc["imageVersion"].as<int>();
+            }
+            
+            Serial.printf("   绑定状态: %s\n", result.claimed ? "已绑定" : "未绑定");
+            if (result.hasPairingCode) {
+                Serial.printf("   配对码: %s (有效期: %d秒)\n", result.pairingCode.c_str(), result.expiresIn);
+            }
+        } else {
+            result.error = "JSON解析失败";
+            Serial.printf("❌ JSON解析失败: %s\n", error.c_str());
+        }
+    } else {
+        result.error = "HTTP错误: " + String(httpCode);
+        Serial.printf("❌ HTTP错误: %d\n", httpCode);
+        if (httpCode < 0) {
+            Serial.printf("   错误详情: %s\n", http.errorToString(httpCode).c_str());
+        }
+    }
+    
+    http.end();
+    return result;
+}
+
 /* MQTT消息回调函数 --------------------------------------------------------*/
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     // 标记设备已激活（收到云端命令）
     if (!deviceActivated) {
         deviceActivated = true;
         Serial.println("\n✅ 设备已激活！");
+    }
+    
+    // 如果收到云端命令，说明设备可能已绑定，更新本地状态
+    if (!deviceClaimed) {
+        deviceClaimed = true;
+        saveClaimedStatus(true);
+        Serial.println("✅ 收到云端命令，更新绑定状态为已绑定");
     }
     
     // 立即输出，确认回调被调用
@@ -427,6 +546,9 @@ void MQTT__setup() {
     topicDownBase = "dev/" + deviceId + "/down";
     topicUpStatus = "dev/" + deviceId + "/up/status";
     
+    // 读取本地持久化的绑定状态
+    deviceClaimed = loadClaimedStatus();
+    
     deviceActivated = false;
     deviceStartupTime = millis();
     deviceCodeShown = false;
@@ -452,9 +574,17 @@ void MQTT__setup() {
     Serial.print(":");
     Serial.println(MQTT_PORT);
     Serial.println("========================================");
-    Serial.println("🔍 检测设备是否已添加到云端...");
-    Serial.println("   - 如果5秒内收到命令，说明已添加");
-    Serial.println("   - 如果5秒无响应，自动显示设备码");
+    Serial.printf("📋 本地绑定状态: %s\n", deviceClaimed ? "已绑定" : "未绑定");
+    
+    // 如果本地已绑定，优先保持当前画面，不显示设备码
+    if (deviceClaimed) {
+        Serial.println("✅ 设备已绑定，不显示设备码");
+        Serial.println("   将向云端确认绑定状态...");
+        Serial.println("   如果云端不可达，继续显示缓存图片");
+    } else {
+        Serial.println("🔍 设备未绑定，将查询云端状态...");
+        Serial.println("   如果云端显示未绑定，将显示配对码");
+    }
     Serial.println("========================================\n");
     
     connectMQTT();
@@ -470,19 +600,107 @@ void MQTT__loop() {
     
     unsigned long now = millis();
     
-    // 启动后5秒检测：如果未激活，自动显示设备码
-    if (!deviceActivated && !deviceCodeShown && (now - deviceStartupTime >= STARTUP_WAIT_MS)) {
+    // 启动后查询云端绑定状态（仅执行一次）
+    static bool statusQueried = false;
+    if (!statusQueried && (now - deviceStartupTime >= 2000)) {  // 启动后2秒查询
+        statusQueried = true;
+        
+        Serial.println("\n========================================");
+        Serial.println("📡 查询云端绑定状态...");
+        Serial.println("========================================");
+        
+        DeviceStatusResponse status = queryDeviceStatus();
+        
+        if (status.success) {
+            // 云端查询成功
+            if (status.claimed) {
+                // 云端显示已绑定
+                if (!deviceClaimed) {
+                    // 本地未绑定但云端已绑定，更新本地状态
+                    deviceClaimed = true;
+                    saveClaimedStatus(true);
+                    Serial.println("✅ 云端显示已绑定，更新本地状态");
+                }
+                Serial.println("✅ 设备已绑定，不显示设备码");
+                deviceActivated = true;  // 标记为已激活，避免显示设备码
+            } else {
+                // 云端显示未绑定
+                if (deviceClaimed) {
+                    // 本地已绑定但云端未绑定，可能是解绑了，更新本地状态
+                    deviceClaimed = false;
+                    saveClaimedStatus(false);
+                    Serial.println("⚠️  云端显示未绑定，更新本地状态");
+                }
+                
+                // 如果云端返回了配对码，使用云端配对码；否则使用设备ID
+                if (status.hasPairingCode && status.pairingCode.length() > 0) {
+                    Serial.printf("📱 配对码: %s (有效期: %d秒)\n", 
+                                 status.pairingCode.c_str(), status.expiresIn);
+                    // 可以在这里显示配对码，但当前实现仍显示设备ID
+                }
+                
+                // 延迟显示设备码，给MQTT消息一些时间
+                if (!deviceCodeShown) {
+                    deviceCodeShown = true;
+                    Serial.println("\n========================================");
+                    Serial.println("📱 设备未绑定，显示设备码...");
+                    Serial.println("========================================");
+                    Serial.println("\n请按以下步骤绑定设备：");
+                    Serial.println("1. 查看屏幕上显示的设备码");
+                    Serial.printf("2. 访问网页: http://%s:%d\n", CLOUD_API_HOST, CLOUD_API_PORT);
+                    Serial.print("3. 输入设备码: ");
+                    Serial.println(deviceId);
+                    Serial.println("4. 点击[绑定设备]");
+                    Serial.println("5. 选择设备，上传图片\n");
+                    
+                    displayDeviceCode();
+                }
+            }
+        } else {
+            // 云端查询失败（离线或网络问题）
+            Serial.printf("⚠️  云端查询失败: %s\n", status.error.c_str());
+            
+            if (deviceClaimed) {
+                // 本地已绑定但云端不可达，不显示设备码，继续显示缓存图片
+                Serial.println("✅ 本地已绑定，云端不可达时不显示设备码");
+                deviceActivated = true;  // 标记为已激活
+            } else {
+                // 本地未绑定且云端不可达，在合理超时后显示配对码
+                Serial.println("⏳ 等待网络恢复或超时后显示配对码...");
+                // 延迟显示，给网络一些恢复时间
+                if (!deviceCodeShown && (now - deviceStartupTime >= STARTUP_WAIT_MS + 3000)) {
+                    deviceCodeShown = true;
+                    Serial.println("\n========================================");
+                    Serial.println("⚠️  云端不可达，显示设备码...");
+                    Serial.println("========================================");
+                    Serial.println("\n请按以下步骤绑定设备：");
+                    Serial.println("1. 查看屏幕上显示的设备码");
+                    Serial.printf("2. 访问网页: http://%s:%d\n", CLOUD_API_HOST, CLOUD_API_PORT);
+                    Serial.print("3. 输入设备码: ");
+                    Serial.println(deviceId);
+                    Serial.println("4. 点击[绑定设备]");
+                    Serial.println("5. 选择设备，上传图片\n");
+                    
+                    displayDeviceCode();
+                }
+            }
+        }
+    }
+    
+    // 如果本地未绑定且未显示设备码，在超时后显示
+    if (!deviceClaimed && !deviceCodeShown && !deviceActivated && 
+        (now - deviceStartupTime >= STARTUP_WAIT_MS)) {
         deviceCodeShown = true;
         
         Serial.println("\n========================================");
-        Serial.println("⚠️  5秒内无云端响应，判定为未添加设备");
-        Serial.println("📱 自动显示设备码到屏幕...");
+        Serial.println("📱 显示设备码到屏幕...");
         Serial.println("========================================");
-        Serial.println("\n请按以下步骤添加设备：");
+        Serial.println("\n请按以下步骤绑定设备：");
         Serial.println("1. 查看屏幕上显示的设备码");
-        Serial.println("2. 访问网页: http://" + String(MQTT_HOST) + ":3000");
-        Serial.println("3. 输入设备码: " + deviceId);
-        Serial.println("4. 点击[添加设备]");
+        Serial.printf("2. 访问网页: http://%s:%d\n", CLOUD_API_HOST, CLOUD_API_PORT);
+        Serial.print("3. 输入设备码: ");
+        Serial.println(deviceId);
+        Serial.println("4. 点击[绑定设备]");
         Serial.println("5. 选择设备，上传图片\n");
         
         displayDeviceCode();
@@ -492,16 +710,32 @@ void MQTT__loop() {
     static unsigned long lastReminderMs = 0;
     if (!deviceActivated && deviceCodeShown && (now - lastReminderMs >= 60000)) {
         lastReminderMs = now;
-        Serial.println("\n⏳ 等待添加到云端...");
+        Serial.println("\n⏳ 等待绑定设备...");
         Serial.print("设备码: ");
         Serial.println(deviceId);
-        Serial.println("网页地址: http://" + String(MQTT_HOST) + ":3000\n");
+        Serial.printf("网页地址: http://%s:%d\n\n", CLOUD_API_HOST, CLOUD_API_PORT);
     }
     
-    // 定期上报状态
+    // 定期上报状态，并在上报后检查绑定状态更新
+    static unsigned long lastStatusCheckMs = 0;
     if (now - lastReportMs >= REPORT_INTERVAL_MS) {
         lastReportMs = now;
         reportStatus();
+        
+        // 每5次状态上报（约2.5分钟）检查一次绑定状态
+        if (now - lastStatusCheckMs >= 150000) {
+            lastStatusCheckMs = now;
+            if (!deviceClaimed) {
+                Serial.println("🔄 定期检查绑定状态...");
+                DeviceStatusResponse status = queryDeviceStatus();
+                if (status.success && status.claimed) {
+                    deviceClaimed = true;
+                    saveClaimedStatus(true);
+                    deviceActivated = true;
+                    Serial.println("✅ 检测到设备已绑定！");
+                }
+            }
+        }
     }
 }
 

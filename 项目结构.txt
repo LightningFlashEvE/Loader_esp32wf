@@ -4,10 +4,10 @@ ESP32 墨水屏 - MQTT云端控制项目
 【ESP32核心文件】- 在Arduino IDE中打开
 --------------------------------------------------
 ✅ Loader_esp32wf.ino          主程序（MQTT云端控制）
-✅ mqtt_config.h                MQTT功能实现
+✅ mqtt_config.h               MQTT功能实现
 ✅ buff.h                       数据缓冲管理
 ✅ epd.h                        墨水屏驱动核心
-✅ epd*.h                       各型号墨水屏驱动（13个文件）
+✅ epd*.h                       各型号墨水屏驱动（16个文件）
    - epd13in3.h                13.3英寸
    - epd1in54.h                1.54英寸
    - epd2in13.h                2.13英寸
@@ -25,16 +25,27 @@ ESP32 墨水屏 - MQTT云端控制项目
    - epd7in5_HD.h              7.5英寸高清
    - epd7in5.h                 7.5英寸
 
-【云端服务器】- 上传到云服务器
+【云端服务器】- Docker部署
 --------------------------------------------------
-📁 cloud_server/                Node.js Web服务
-   ├── server.js               Express服务器 + MQTT客户端
-   ├── package.json            依赖配置
-   ├── install.sh              一键安装脚本 ⭐
-   ├── Dockerfile              Docker镜像配置
-   └── public/                 Web前端界面
-       ├── index.html          现代化网页界面
-       └── app.js              前端逻辑（图片处理+通信）
+📁 cloud_server/                云端服务目录
+   ├── docker-compose.yml      Docker编排配置 ⭐
+   ├── backend/                Python Flask后端
+   │   ├── app.py              Flask API服务器
+   │   ├── config.py           配置文件
+   │   ├── tri_color_epd.py    自研3色算法模块
+   │   ├── requirements.txt    Python依赖
+   │   └── Dockerfile          后端镜像配置
+   ├── frontend/               Web前端
+   │   ├── index.html          设备管理页面
+   │   ├── login.html          登录页面
+   │   ├── control.html        页面编辑器
+   │   ├── app.js              前端核心逻辑
+   │   ├── auth.js              认证工具
+   │   ├── devices.js          设备管理
+   │   ├── editor.js           编辑器功能
+   │   ├── nginx.conf          Nginx配置
+   │   └── Dockerfile          前端镜像配置
+   └── public/                 静态资源目录
 
 【MQTT Broker配置】
 --------------------------------------------------
@@ -42,14 +53,11 @@ ESP32 墨水屏 - MQTT云端控制项目
    ├── config/mosquitto.conf   Mosquitto配置文件
    └── setup.sh                Docker初始化脚本
 
-【反向代理】（可选）
+【其他配置文件】
 --------------------------------------------------
-📁 nginx/                       Nginx配置
-   └── nginx.conf              反向代理配置
-
-【Docker部署】（可选）
---------------------------------------------------
-📄 docker-compose.yml           Docker编排配置
+📄 docker-compose.yml           根目录Docker编排（旧版，已迁移到cloud_server）
+📄 configure_emqx.sh           EMQX配置脚本
+📄 fix_emqx_acl.sh             EMQX ACL修复脚本
 
 【文档】
 --------------------------------------------------
@@ -59,6 +67,7 @@ ESP32 墨水屏 - MQTT云端控制项目
 📖 DEPLOYMENT.md                详细部署步骤
 📖 README.md                    完整项目文档
 📖 PROJECT_STRUCTURE.md         项目结构详解
+📖 测试检查清单.md              测试检查项
 
 ================================
 快速开始
@@ -82,26 +91,30 @@ ESP32 墨水屏 - MQTT云端控制项目
 
 【第二步：部署云服务器】
 ------------------------------
-1. 将 cloud_server 文件夹上传到服务器
+1. 将 cloud_server 文件夹上传到服务器（例如：/opt/cloud_server）
 
 2. SSH连接服务器，运行：
-   cd cloud_server
-   chmod +x install.sh
-   bash install.sh
+   cd /opt/cloud_server
+   docker compose up -d --build
 
-3. 等待安装完成
+3. 等待构建和启动完成
+
+4. 检查服务状态：
+   docker ps -a | grep esp32
 
 【第三步：使用】
 ------------------------------
 1. 浏览器访问：http://服务器IP:3000
 
-2. 输入ESP32的设备ID
+2. 注册账号并登录
 
-3. 选择墨水屏型号
+3. 添加设备（输入ESP32的设备ID）
 
-4. 上传图片 → 处理 → 上传到设备
+4. 选择设备进入编辑器
 
-5. 等待墨水屏刷新（10-30秒）
+5. 上传图片 → 选择处理模式 → 处理并预览 → 下发到设备
+
+6. 等待墨水屏刷新（10-30秒）
 
 ================================
 核心配置文件
@@ -137,6 +150,24 @@ MQTT服务器配置：
 #define MQTT_USER "admin"
 #define MQTT_PASS "admin"
 
+【cloud_server/backend/config.py】
+------------------------------
+后端服务配置：
+
+- MQTT_BROKER: MQTT服务器地址
+- MQTT_PORT: MQTT端口
+- MQTT_USER: MQTT用户名
+- MQTT_PASS: MQTT密码
+- MONGODB_URI: MongoDB连接字符串
+- MONGODB_DB: 数据库名称
+
+【cloud_server/docker-compose.yml】
+------------------------------
+Docker服务编排：
+
+- frontend: 前端服务（端口3000）
+- backend: 后端API服务（端口5000）
+
 ================================
 项目特点
 ================================
@@ -144,7 +175,10 @@ MQTT服务器配置：
 ✅ 远程控制 - 全球任何地方都能访问
 ✅ 现代UI - 美观的渐变设计，拖拽上传
 ✅ 实时反馈 - 显示上传进度和设备状态
-✅ 易于部署 - 一键安装脚本
+✅ Docker部署 - 一键启动，易于维护
+✅ 用户认证 - 支持多用户，设备隔离
+✅ 页面管理 - 支持保存、编辑、模板功能
+✅ 多种算法 - 抖动、阈值、自研3色算法
 ✅ 自动获取IP - DHCP默认配置
 ✅ 多设备支持 - 可管理多个ESP32设备
 
@@ -168,14 +202,14 @@ Arduino IDE库管理器搜索安装：
 ================================
 
 - 系统: Ubuntu 20.04+ 或其他Linux发行版
-- 内存: 至少512MB
+- 内存: 至少1GB（推荐2GB+）
 - 网络: 公网IP或域名
-- 端口: 1883(MQTT), 3000(Web)
+- 端口: 1883(MQTT), 3000(Web前端), 5000(后端API)
 
 安装的软件：
-- Node.js 18+
-- Mosquitto MQTT Broker
-- PM2（进程管理）
+- Docker 20.10+
+- Docker Compose 2.0+
+- MongoDB（可选，使用云数据库时可省略）
 
 ================================
 故障排查
@@ -191,39 +225,90 @@ Arduino IDE库管理器搜索安装：
 → 在服务器测试：mosquitto_sub -h localhost -p 1883 -u admin -P admin -t '#'
 
 【问题3：Web界面打不开】
-→ 检查服务：pm2 status
-→ 查看日志：pm2 logs esp32-cloud
+→ 检查服务：docker ps -a | grep esp32
+→ 查看日志：docker logs esp32-frontend
+→ 查看日志：docker logs esp32-backend
 → 检查防火墙：sudo ufw status
 
 【问题4：图片上传失败】
 → 确认设备ID正确
 → 确认ESP32显示"✅ MQTT已连接"
 → 打开浏览器开发者工具查看网络请求
+→ 检查后端日志：docker logs esp32-backend
+
+【问题5：Docker服务启动失败】
+→ 检查端口占用：netstat -tulpn | grep -E '3000|5000'
+→ 检查Docker状态：docker ps -a
+→ 查看详细错误：docker compose logs
 
 ================================
 管理命令
 ================================
 
-【云服务器】
-pm2 status              查看服务状态
-pm2 logs esp32-cloud    查看日志
-pm2 restart esp32-cloud 重启服务
-pm2 stop esp32-cloud    停止服务
+【Docker服务管理】
+cd /opt/cloud_server
+docker compose up -d --build       构建并启动所有服务
+docker compose down                 停止所有服务
+docker compose restart              重启所有服务
+docker compose logs -f              查看所有服务日志
+docker compose logs -f backend      查看后端日志
+docker compose logs -f frontend     查看前端日志
+
+【单个容器管理】
+docker ps -a                        查看所有容器
+docker logs esp32-backend           查看后端日志
+docker logs esp32-frontend          查看前端日志
+docker restart esp32-backend        重启后端
+docker restart esp32-frontend       重启前端
 
 【MQTT调试】
 mosquitto_sub -h localhost -p 1883 -u admin -P admin -t '#' -v
 
 【系统】
-sudo systemctl status mosquitto    MQTT服务状态
-sudo ufw status                    防火墙状态
+sudo systemctl status mosquitto     MQTT服务状态（如果使用系统服务）
+sudo ufw status                     防火墙状态
+
+================================
+处理算法说明
+================================
+
+【抖动算法（黑白）】
+- 使用Floyd-Steinberg误差扩散抖动
+- 适合照片、渐变图像
+- 会产生点阵纹理
+
+【阈值算法（黑白）】
+- 简单二值化，阈值128
+- 适合文字、图标
+- 边缘清晰，无纹理
+
+【抖动算法（三色）】
+- 黑白层使用误差扩散抖动
+- 红色区域自动提取
+- 适合彩色照片
+
+【阈值算法（三色）】
+- 黑白层使用简单阈值
+- 红色区域自动提取
+- 适合文字、图标
+
+【自研3色算法】⭐
+- HSV色相判断 + RGB差值判断
+- 黄色自动识别为红色（三色屏无黄色）
+- 形态学处理（去散点、补小洞）
+- Bayer有序抖动（可选）
+- 红层优先，避免红里夹黑点
+- 适合所有类型图像，效果最佳
 
 ================================
 更多帮助
 ================================
 
 详细文档请查看：
-- 使用说明.md （推荐先看这个）
+- 使用说明.md （推荐先看这个）⭐⭐⭐
 - QUICKSTART.md（快速上手）
 - DEPLOYMENT.md（详细部署）
+- PROJECT_STRUCTURE.md（项目结构详解）
+- 测试检查清单.md（测试检查项）
 
 串口监视器查看实时日志和错误信息

@@ -455,6 +455,55 @@ function processImage() {
     // 重置红色通道数据
     redChannelData = null;
     
+    // 自研3色算法：调用后端处理
+    if (processType === 'tricolor_custom') {
+        // 将画布转换为 base64 PNG
+        const imageDataUrl = processedCanvas.toDataURL('image/png');
+        const base64Data = imageDataUrl.split(',')[1];
+        
+        log('正在调用后端自研3色算法处理...');
+        
+        // 调用后端 API
+        fetch(`${API_BASE}/api/epd/process-tricolor-custom`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeaders()
+            },
+            body: JSON.stringify({
+                imageData: base64Data,
+                width: width,
+                height: height
+            })
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                // 加载预览图到画布
+                const previewImg = new Image();
+                previewImg.onload = () => {
+                    ctx.clearRect(0, 0, width, height);
+                    ctx.drawImage(previewImg, 0, 0);
+                    
+                    // 保存黑/红层数据用于后续下发
+                    processedImageData = ctx.getImageData(0, 0, width, height);
+                    redChannelData = result.redChannelData; // 后端返回的红色通道数组
+                    
+                    log(`自研3色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
+                };
+                previewImg.src = 'data:image/png;base64,' + result.previewImage;
+            } else {
+                log('处理失败: ' + result.error, 'error');
+            }
+        })
+        .catch(error => {
+            log('处理失败: ' + error.message, 'error');
+            console.error(error);
+        });
+        
+        return; // 异步处理，直接返回
+    }
+    
     // 三色屏处理（黑白红）
     if (processType === 'tricolor_dither' || processType === 'tricolor_level') {
         // 创建红色通道数组

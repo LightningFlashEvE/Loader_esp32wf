@@ -773,10 +773,6 @@
                 <span>📐</span>
                 <span id="resolutionDisplay">800×480</span>
             </div>
-            <div class="status-item">
-                <span>🕐</span>
-                <span id="lastUpdateDisplay">--</span>
-            </div>
         </div>
         <div class="actions">
             <button class="btn btn-light" onclick="window.location.href='index.html'">
@@ -1029,6 +1025,10 @@
                             <input type="radio" name="processType" value="tricolor_level">
                             <span>阈值算法（三色）</span>
                         </label>
+                        <label class="process-option">
+                            <input type="radio" name="processType" value="tricolor_custom">
+                            <span>自研3色算法</span>
+                        </label>
                     </div>
                 </div>
                 
@@ -1122,6 +1122,7 @@
     <input type="hidden" id="width" value="800">
     <input type="hidden" id="height" value="480">
     
+    <script src="auth.js"></script>
     <script src="app.js"></script>
     <script src="editor.js"></script>
 </body>

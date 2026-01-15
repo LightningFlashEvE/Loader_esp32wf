@@ -1025,6 +1025,121 @@ def epd_show():
         print(f'❌ Publish error: {error}')
         return jsonify({'success': False, 'error': error}), 500
 
+# ==================== API: 自研3色算法处理 ====================
+
+@app.route('/api/epd/process-tricolor-custom', methods=['POST'])
+@login_required
+def process_tricolor_custom():
+    """使用自研3色算法处理图片（仅限当前用户的设备）"""
+    try:
+        from PIL import Image
+        import base64
+        import io
+        from tri_color_epd import process_tricolor_image, build_preview_image, RedMaskParams, BlackPlaneParams
+        
+        data = request.get_json()
+        image_data = data.get('imageData')
+        width = data.get('width', 800)
+        height = data.get('height', 480)
+        
+        if not image_data:
+            return jsonify({'success': False, 'error': 'Missing imageData'}), 400
+        
+        # 解码 base64 图片
+        try:
+            img_bytes = base64.b64decode(image_data)
+            img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid image data: {str(e)}'}), 400
+        
+        # 调整图片大小
+        if img.size != (width, height):
+            img = img.resize((width, height), Image.LANCZOS)
+        
+        # 调用自研3色算法处理
+        # 使用更宽松的红色检测参数，更容易检测到红色
+        red_params = RedMaskParams(
+            h_low=30.0,   # 扩大色相范围（默认20）
+            h_high=330.0, # 扩大色相范围（默认340）
+            s_min=0.20,   # 降低饱和度要求（默认0.35）
+            v_min=0.15,   # 降低亮度要求（默认0.25）
+            rg_min=30,    # 降低RGB差值要求（默认50）
+            rb_min=30,    # 降低RGB差值要求（默认50）
+            open_iters=1, # 形态学开运算次数（去散点）
+            close_iters=1, # 形态学闭运算次数（补小洞）
+        )
+        
+        result = process_tricolor_image(
+            img,
+            target_size=(width, height),
+            red_params=red_params,
+            black_params=BlackPlaneParams(
+                gamma=1.0,
+                threshold=0.5,
+                dither='bayer8',  # 使用 Bayer 8x8 有序抖动
+            ),
+        )
+        
+        # 调试信息：统计红色像素数量
+        red_pixel_count = int(result.red_plane.sum())
+        total_pixels = result.red_plane.size
+        red_percentage = (red_pixel_count / total_pixels * 100) if total_pixels > 0 else 0
+        print(f'🔴 红色像素统计: {red_pixel_count}/{total_pixels} ({red_percentage:.2f}%)')
+        
+        # 如果红色像素太少，尝试更宽松的参数
+        if red_pixel_count < 10:  # 如果红色像素少于10个
+            print('⚠️  红色像素太少，尝试使用更宽松的参数重新处理...')
+            red_params_loose = RedMaskParams(
+                h_low=40.0,
+                h_high=320.0,
+                s_min=0.15,
+                v_min=0.10,
+                rg_min=20,
+                rb_min=20,
+                open_iters=0,  # 不做形态学处理，保留更多红色
+                close_iters=0,
+            )
+            result = process_tricolor_image(
+                img,
+                target_size=(width, height),
+                red_params=red_params_loose,
+                black_params=BlackPlaneParams(
+                    gamma=1.0,
+                    threshold=0.5,
+                    dither='bayer8',
+                ),
+            )
+            red_pixel_count = int(result.red_plane.sum())
+            print(f'🔴 宽松参数后红色像素: {red_pixel_count}/{total_pixels} ({red_pixel_count/total_pixels*100:.2f}%)')
+        
+        # 生成预览图
+        preview_img = build_preview_image(result.black_plane, result.red_plane)
+        
+        # 将预览图转为 base64
+        preview_buffer = io.BytesIO()
+        preview_img.save(preview_buffer, format='PNG')
+        preview_base64 = base64.b64encode(preview_buffer.getvalue()).decode('utf-8')
+        
+        # 将红色通道数据转为数组（用于前端显示统计）
+        red_channel_array = result.red_plane.flatten().astype(int).tolist()
+        
+        return jsonify({
+            'success': True,
+            'previewImage': preview_base64,
+            'redChannelData': red_channel_array,
+            'width': width,
+            'height': height
+        })
+        
+    except ImportError as e:
+        print(f'❌ Import error: {e}')
+        return jsonify({'success': False, 'error': 'Processing module not available'}), 500
+    except Exception as e:
+        print(f'❌ Processing error: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ==================== 健康检查 ====================
 
 @app.route('/api/health', methods=['GET'])

@@ -5,3 +5,5 @@ pymongo
 paho-mqtt==1.6.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
+numpy==1.26.4
+Pillow==10.3.0

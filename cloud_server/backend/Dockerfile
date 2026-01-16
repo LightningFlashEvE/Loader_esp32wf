@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py config.py tri_color_epd.py ./
+COPY app.py config.py tri_color_epd.py six_color_epd.py ./
 
 EXPOSE 5000
 

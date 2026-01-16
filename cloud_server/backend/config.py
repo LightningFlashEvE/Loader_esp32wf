@@ -16,3 +16,7 @@ class Config:
     MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
     MQTT_USER = os.environ.get('MQTT_USER', 'admin')
     MQTT_PASS = os.environ.get('MQTT_PASS', 'admin')
+    
+    # Flask (用于构建下载URL)
+    FLASK_HOST = os.environ.get('FLASK_HOST', MQTT_BROKER)  # 默认与MQTT broker相同
+    FLASK_PORT = int(os.environ.get('FLASK_PORT', 5000))

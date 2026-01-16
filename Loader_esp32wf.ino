@@ -33,7 +33,11 @@ void setup()
     Serial.begin(115200);
     delay(10);
     
-    // SPI initialization
+    // 初始化官方Demo的硬件接口
+    #include "DEV_Config.h"
+    DEV_Module_Init();
+    
+    // SPI initialization（保留原有初始化，确保兼容）
     EPD_initSPI();
     
     // WiFi连接 - 使用DHCP自动获取IP
@@ -41,12 +45,6 @@ void setup()
     Serial.println();
     Serial.print("Connecting to ");
     Serial.println(ssid);
-    
-    // 使用DHCP（默认）
-    // 如果需要使用静态IP，取消下面的注释：
-    // if (WiFi.config(staticIP, gateway, subnet, dns, dns) == false) {
-    //     Serial.println("Static IP configuration failed.");
-    // }
     
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) {
@@ -59,7 +57,7 @@ void setup()
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
     
-    // MQTT模式初始化
+    // MQTT模式初始化（会自动显示设备码）
     MQTT__setup();
     
     Serial.println("✅ 系统就绪，等待云端命令...\n");

@@ -373,8 +373,8 @@ function fitToScreen() {
     log(`已适应屏幕，缩放: ${sliderValue}%`, 'success');
 }
 
-// 全局变量：存储三色屏的红色通道数据
-let redChannelData = null;
+// 全局变量：存储6色处理的4bit数据
+window.e6Data4bit = null;
 
 function authHeaders() {
     if (typeof getAuthHeaders === 'function') {
@@ -384,7 +384,7 @@ function authHeaders() {
     return token ? { 'Authorization': 'Bearer ' + token } : {};
 }
 
-// 处理图片
+// 处理图片 - 简化版：只调用后端API
 function processImage() {
     // 新版界面：检查当前模式
     if (typeof currentMode !== 'undefined' && currentMode !== 'image') {
@@ -413,8 +413,6 @@ function processImage() {
     // 获取参数
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
-    const processTypeEl = document.querySelector('input[name="processType"]:checked');
-    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
     
     if (width < 3 || height < 3) {
         log('图片尺寸太小', 'error');
@@ -448,199 +446,51 @@ function processImage() {
         return;
     }
     
-    // 获取原始图像数据
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
+    // 将画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    const base64Data = imageDataUrl.split(',')[1];
     
-    // 重置红色通道数据
-    redChannelData = null;
+    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
     
-    // 自研3色算法：调用后端处理
-    if (processType === 'tricolor_custom') {
-        // 将画布转换为 base64 PNG
-        const imageDataUrl = processedCanvas.toDataURL('image/png');
-        const base64Data = imageDataUrl.split(',')[1];
-        
-        log('正在调用后端自研3色算法处理...');
-        
-        // 调用后端 API
-        fetch(`${API_BASE}/api/epd/process-tricolor-custom`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...authHeaders()
-            },
-            body: JSON.stringify({
-                imageData: base64Data,
-                width: width,
-                height: height
-            })
+    // 调用后端 API
+    fetch(`${API_BASE}/api/epd/process-sixcolor`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders()
+        },
+        body: JSON.stringify({
+            imageData: base64Data,
+            width: width,
+            height: height
         })
-        .then(response => response.json())
-        .then(result => {
-            if (result.success) {
-                // 加载预览图到画布
-                const previewImg = new Image();
-                previewImg.onload = () => {
-                    ctx.clearRect(0, 0, width, height);
-                    ctx.drawImage(previewImg, 0, 0);
-                    
-                    // 保存黑/红层数据用于后续下发
-                    processedImageData = ctx.getImageData(0, 0, width, height);
-                    redChannelData = result.redChannelData; // 后端返回的红色通道数组
-                    
-                    log(`自研3色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
-                };
-                previewImg.src = 'data:image/png;base64,' + result.previewImage;
-            } else {
-                log('处理失败: ' + result.error, 'error');
-            }
-        })
-        .catch(error => {
-            log('处理失败: ' + error.message, 'error');
-            console.error(error);
-        });
-        
-        return; // 异步处理，直接返回
-    }
-    
-    // 三色屏处理（黑白红）
-    if (processType === 'tricolor_dither' || processType === 'tricolor_level') {
-        // 创建红色通道数组
-        redChannelData = new Array(width * height).fill(0);  // 0=不是红色, 1=红色
-        
-        // 第一步：提取红色像素
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            
-            // 判断是否为红色：红色分量高，且明显高于绿蓝
-            const isRed = (r > 100) && (r > g * 1.5) && (r > b * 1.5);
-            
-            if (isRed) {
-                redChannelData[i / 4] = 1;  // 标记为红色
-                // 红色像素在黑白通道中显示为白色
-                data[i] = data[i + 1] = data[i + 2] = 255;
-            }
-        }
-        
-        // 第二步：对非红色像素进行黑白处理
-        // 先转换为灰度
-        for (let i = 0; i < data.length; i += 4) {
-            if (redChannelData[i / 4] === 0) {  // 非红色像素
-                const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-                data[i] = data[i + 1] = data[i + 2] = gray;
-            }
-        }
-        
-        if (processType === 'tricolor_dither') {
-            // Floyd-Steinberg抖动（只对非红色像素）
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const pixelIdx = y * width + x;
-                    if (redChannelData[pixelIdx] === 1) continue;  // 跳过红色像素
-                    
-                    const idx = pixelIdx * 4;
-                    const oldPixel = data[idx];
-                    const newPixel = oldPixel < 128 ? 0 : 255;
-                    const error = oldPixel - newPixel;
-                    
-                    data[idx] = data[idx + 1] = data[idx + 2] = newPixel;
-                    
-                    // 扩散误差（只扩散到非红色像素）
-                    if (x + 1 < width && redChannelData[pixelIdx + 1] === 0) {
-                        const i = (pixelIdx + 1) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 7 / 16));
-                    }
-                    if (y + 1 < height) {
-                        if (x > 0 && redChannelData[pixelIdx + width - 1] === 0) {
-                            const i = (pixelIdx + width - 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 3 / 16));
-                        }
-                        if (redChannelData[pixelIdx + width] === 0) {
-                            const i = (pixelIdx + width) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 5 / 16));
-                        }
-                        if (x + 1 < width && redChannelData[pixelIdx + width + 1] === 0) {
-                            const i = (pixelIdx + width + 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 1 / 16));
-                        }
-                    }
-                }
-            }
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // 加载预览图到画布
+            const previewImg = new Image();
+            previewImg.onload = () => {
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(previewImg, 0, 0);
+                
+                // 保存处理后的图像数据
+                processedImageData = ctx.getImageData(0, 0, width, height);
+                
+                // 保存4bit数据（base64编码）
+                window.e6Data4bit = result.data4bit; // 4bit数据（base64）
+                
+                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.src = 'data:image/png;base64,' + result.previewImage;
         } else {
-            // Level阈值（只对非红色像素）
-            for (let i = 0; i < data.length; i += 4) {
-                if (redChannelData[i / 4] === 0) {
-                    const value = data[i] < 128 ? 0 : 255;
-                    data[i] = data[i + 1] = data[i + 2] = value;
-                }
-            }
+            log('处理失败: ' + result.error, 'error');
         }
-        
-        // 第三步：在预览中显示红色像素为红色
-        for (let i = 0; i < data.length; i += 4) {
-            if (redChannelData[i / 4] === 1) {
-                data[i] = 255;      // R
-                data[i + 1] = 0;    // G
-                data[i + 2] = 0;    // B
-            }
-        }
-        
-        log(`三色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
-        
-    } else {
-        // 黑白屏处理
-        // 转换为灰度
-        for (let i = 0; i < data.length; i += 4) {
-            const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-            data[i] = data[i + 1] = data[i + 2] = gray;
-        }
-        
-        if (processType === 'dither_mono') {
-            // Floyd-Steinberg抖动算法
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = (y * width + x) * 4;
-                    const oldPixel = data[idx];
-                    const newPixel = oldPixel < 128 ? 0 : 255;
-                    const error = oldPixel - newPixel;
-                    
-                    data[idx] = data[idx + 1] = data[idx + 2] = newPixel;
-                    
-                    if (x + 1 < width) {
-                        const i = (y * width + x + 1) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 7 / 16));
-                    }
-                    if (y + 1 < height) {
-                        if (x > 0) {
-                            const i = ((y + 1) * width + x - 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 3 / 16));
-                        }
-                        const i = ((y + 1) * width + x) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 5 / 16));
-                        
-                        if (x + 1 < width) {
-                            const i = ((y + 1) * width + x + 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 1 / 16));
-                        }
-                    }
-                }
-            }
-        } else if (processType === 'level_mono') {
-            // 简单黑白阈值
-            for (let i = 0; i < data.length; i += 4) {
-                const value = data[i] < 128 ? 0 : 255;
-                data[i] = data[i + 1] = data[i + 2] = value;
-            }
-        }
-        
-        log('图片处理完成', 'success');
-    }
-    
-    ctx.putImageData(imageData, 0, 0);
-    processedImageData = imageData;
+    })
+    .catch(error => {
+        log('处理失败: ' + error.message, 'error');
+        console.error(error);
+    });
 }
 
 // 编码工具函数
@@ -714,10 +564,15 @@ function hideProgress() {
     if (container) container.style.display = 'none';
 }
 
-// 发送数据到设备
+// 发送数据到设备（旧版，兼容性保留）
 async function sendDataToDevice(deviceId, dataString, label = '上传数据') {
-    const chunkSize = 1000;
+    return sendDataToDeviceInChunks(deviceId, dataString, 1000);
+}
+
+// 分批发送数据到设备（支持自定义缓存大小）
+async function sendDataToDeviceInChunks(deviceId, dataString, chunkSize = 1000) {
     const totalChunks = Math.ceil(dataString.length / chunkSize);
+    console.log(`📦 开始分批发送: 总长度=${dataString.length}, 每批=${chunkSize}, 共${totalChunks}批`);
     
     for (let i = 0; i < dataString.length; i += chunkSize) {
         const chunk = dataString.substring(i, i + chunkSize);
@@ -741,29 +596,52 @@ async function sendDataToDevice(deviceId, dataString, label = '上传数据') {
         const progress = ((i + chunkSize) / dataString.length) * 100;
         updateProgress(Math.min(progress, 100));
         
-        await sleep(100);
+        const currentChunk = Math.floor(i / chunkSize) + 1;
+        log(`已发送 ${currentChunk}/${totalChunks} 批 (${Math.min(i + chunkSize, dataString.length)}/${dataString.length} 字符)`);
+        
+        await sleep(100); // 等待ESP32处理
     }
+    
+    log(`✅ 所有数据已发送完成 (${totalChunks}批)`, 'success');
 }
 
-// 上传到设备
+// 上传到设备（简化版：只支持6色处理）
 async function uploadToDevice() {
-    if (!processedImageData) {
-        log('请先处理图片', 'error');
+    // 检查是否有处理后的数据
+    if (!window.e6Data4bit) {
+        log('请先处理图片（点击"处理并预览"）', 'error');
         return;
     }
     
-    const deviceId = document.getElementById('deviceId').value.trim();
+    // 获取deviceId，优先从隐藏input获取，如果没有则从URL参数获取
+    let deviceId = '';
+    const deviceIdInput = document.getElementById('deviceId');
+    if (deviceIdInput) {
+        deviceId = deviceIdInput.value.trim();
+    }
+    
+    // 如果还是没有，尝试从URL参数获取
+    if (!deviceId) {
+        const params = new URLSearchParams(window.location.search);
+        deviceId = params.get('deviceId') || '';
+    }
+    
+    // 如果还是没有，尝试从全局变量获取（editor.js设置的）
+    if (!deviceId && typeof window.deviceId !== 'undefined') {
+        deviceId = window.deviceId;
+    }
+    
     if (!deviceId) {
         log('请输入设备ID', 'error');
+        console.error('❌ deviceId未找到');
         return;
     }
     
-    const epdType = parseInt(document.getElementById('epdType').value);
-    const processType = document.querySelector('input[name="processType"]:checked').value;
-    const isTricolor = processType.startsWith('tricolor_');
+    const epdType = 0; // 固定为7.3寸E6
+    const width = 800;
+    const height = 480;
     
-    // 三色屏型号列表
-    const tricolorTypes = [1, 6, 14, 17, 20, 23, 24];  // 带红色的型号
+    console.log('📤 下发参数:', { deviceId, epdType, width, height });
     
     try {
         showProgress('初始化中...');
@@ -773,7 +651,10 @@ async function uploadToDevice() {
         const initResponse = await fetch(`${API_BASE}/api/epd/init`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ deviceId, epdType })
+            body: JSON.stringify({ 
+                deviceId: deviceId, 
+                epdType: Number(epdType) 
+            })
         });
         
         if (!initResponse.ok) {
@@ -782,69 +663,49 @@ async function uploadToDevice() {
         
         await sleep(500);
         
-        const width = processedImageData.width;
-        const height = processedImageData.height;
-        const data = processedImageData.data;
-        
         log(`正在上传图像数据 (${width}x${height})...`);
         
-        // 生成黑白通道数据
-        // 对于三色屏预览，红色像素(255,0,0)应该在黑白通道中显示为白色
-        const bwPixelArray = [];
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idx = (y * width + x) * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
-                
-                // 判断是否为红色像素（预览中显示为纯红色）
-                const isRedPixel = (r === 255 && g === 0 && b === 0);
-                
-                if (isRedPixel) {
-                    // 红色像素在黑白通道中为白色(1)
-                    bwPixelArray.push(1);
-                } else {
-                    // 其他像素根据亮度判断
-                    const gray = r * 0.299 + g * 0.587 + b * 0.114;
-                    bwPixelArray.push(gray < 128 ? 0 : 1);
-                }
-            }
+        showProgress('上传6色数据（一次下发）...');
+        log(`上传6色数据（4bit格式，一次下发）...`);
+        
+        // 从后端返回的base64数据解码
+        const binaryString = atob(window.e6Data4bit);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
         }
         
-        const bwDataString = pixelArrayToDataString(bwPixelArray);
-        console.log(`📊 黑白通道: ${bwDataString.length} 字符`);
-        
-        // 发送黑白通道数据
-        showProgress('上传黑白通道...');
-        log('上传黑白通道...');
-        await sendDataToDevice(deviceId, bwDataString);
-        
-        // 如果是三色屏模式且有红色数据，发送红色通道
-        if (isTricolor && redChannelData && redChannelData.some(x => x === 1)) {
-            showProgress('上传红色通道...');
-            log('上传红色通道...');
-            
-            // 发送NEXT命令切换到红色通道
-            const nextResponse = await fetch(`${API_BASE}/api/epd/next`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ deviceId })
-            });
-            
-            if (!nextResponse.ok) {
-                throw new Error('切换通道失败');
-            }
-            
-            await sleep(200);
-            
-            // 生成红色通道数据（红色像素为黑(0)，其他为白(1)）
-            const redPixelArray = redChannelData.map(v => v === 1 ? 0 : 1);
-            const redDataString = pixelArrayToDataString(redPixelArray);
-            console.log(`📊 红色通道: ${redDataString.length} 字符, 红色像素: ${redChannelData.filter(x => x === 1).length}`);
-            
-            await sendDataToDevice(deviceId, redDataString);
+        // 转换为编码字符串格式（'a'=0, 'b'=1, ..., 'p'=15）
+        const sixColorDataString = [];
+        for (let i = 0; i < bytes.length; i++) {
+            const byte = bytes[i];
+            const low = byte & 0x0F;
+            const high = (byte >> 4) & 0x0F;
+            // 编码为字符串
+            sixColorDataString.push(String.fromCharCode(97 + low));
+            sixColorDataString.push(String.fromCharCode(97 + high));
         }
+        
+        const dataString = sixColorDataString.join('');
+        console.log(`📊 6色数据: ${dataString.length} 字符 (${width}x${height}, 4bit格式，后端处理)`);
+        console.log(`📦 一次发送所有数据 (${dataString.length} 字符)`);
+        
+        // 一次发送所有数据（不添加长度后缀，因为ESP32直接写入Flash）
+        const response = await fetch(`${API_BASE}/api/epd/load`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ 
+                deviceId, 
+                data: dataString,
+                length: dataString.length
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error('数据发送失败: ' + await response.text());
+        }
+        
+        log(`✅ 数据已发送完成 (${dataString.length} 字符)`, 'success');
         
         // 显示
         showProgress('刷新显示...');
@@ -912,31 +773,17 @@ async function showDeviceCode() {
     }
 }
 
-// EPD型号分辨率映射
+// EPD型号分辨率映射（固定为7.3" E6）
 const EPD_RESOLUTIONS = {
-    0: [200, 200],   // 1.54"
-    1: [200, 200],   // 1.54" B
-    3: [122, 250],   // 2.13"
-    6: [104, 212],   // 2.13" B
-    9: [128, 296],   // 2.9"
-    13: [400, 300],  // 4.2"
-    14: [400, 300],  // 4.2" B
-    16: [600, 448],  // 5.83"
-    19: [640, 384],  // 7.5"
-    22: [800, 480],  // 7.5" V2
-    23: [800, 480],  // 7.5" B V2 ⭐
-    26: [880, 528],  // 7.5" HD
+    0: [800, 480],  // 7.3" E6
 };
 
-// 根据EPD型号自动设置分辨率
+// 根据EPD型号自动设置分辨率（固定为7.3" E6）
 function updateResolution() {
-    const epdType = parseInt(document.getElementById('epdType').value);
-    
-    if (EPD_RESOLUTIONS[epdType]) {
-        document.getElementById('width').value = EPD_RESOLUTIONS[epdType][0];
-        document.getElementById('height').value = EPD_RESOLUTIONS[epdType][1];
-        log(`已设置分辨率: ${EPD_RESOLUTIONS[epdType][0]}x${EPD_RESOLUTIONS[epdType][1]}`);
-    }
+    // 固定为7.3寸E6
+    document.getElementById('width').value = 800;
+    document.getElementById('height').value = 480;
+    log(`已设置分辨率: 800x480 (7.3寸E6)`);
 }
 
 // 页面加载时初始化分辨率
@@ -1230,7 +1077,7 @@ function processCurrentMode() {
     }
 }
 
-// 处理模板模式
+// 处理模板模式 - 简化版：只调用后端API
 function processTemplateImage() {
     const mainCanvas = document.getElementById('mainCanvas');
     const processedCanvas = document.getElementById('processedCanvas');
@@ -1239,8 +1086,6 @@ function processTemplateImage() {
     
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
-    const processTypeEl = document.querySelector('input[name="processType"]:checked');
-    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
     
     // 复制主画布到处理画布
     processedCanvas.width = width;
@@ -1248,52 +1093,54 @@ function processTemplateImage() {
     const ctx = processedCanvas.getContext('2d');
     ctx.drawImage(mainCanvas, 0, 0);
     
-    // 获取图像数据并处理
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
+    // 将画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    const base64Data = imageDataUrl.split(',')[1];
     
-    // 重置红色通道数据
-    redChannelData = null;
+    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
     
-    // 三色屏处理
-    if (processType.startsWith('tricolor_')) {
-        redChannelData = new Array(width * height).fill(0);
-        
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            
-            const isRed = (r > 200 && g < 100 && b < 100);
-            
-            if (isRed) {
-                redChannelData[i / 4] = 1;
-                data[i] = 255;
-                data[i + 1] = 0;
-                data[i + 2] = 0;
-            } else {
-                const gray = r * 0.299 + g * 0.587 + b * 0.114;
-                const bw = gray < 128 ? 0 : 255;
-                data[i] = data[i + 1] = data[i + 2] = bw;
-            }
+    // 调用后端 API
+    fetch(`${API_BASE}/api/epd/process-sixcolor`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders()
+        },
+        body: JSON.stringify({
+            imageData: base64Data,
+            width: width,
+            height: height
+        })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // 加载预览图到画布
+            const previewImg = new Image();
+            previewImg.onload = () => {
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(previewImg, 0, 0);
+                
+                // 保存处理后的图像数据
+                processedImageData = ctx.getImageData(0, 0, width, height);
+                
+                // 保存4bit数据（base64编码）
+                window.e6Data4bit = result.data4bit;
+                
+                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.src = 'data:image/png;base64,' + result.previewImage;
+        } else {
+            log('处理失败: ' + result.error, 'error');
         }
-        
-        log(`三色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
-    } else {
-        // 黑白处理
-        for (let i = 0; i < data.length; i += 4) {
-            const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-            const bw = gray < 128 ? 0 : 255;
-            data[i] = data[i + 1] = data[i + 2] = bw;
-        }
-        
-        log('模板处理完成', 'success');
-    }
-    
-    ctx.putImageData(imageData, 0, 0);
-    processedImageData = imageData;
+    })
+    .catch(error => {
+        log('处理失败: ' + error.message, 'error');
+        console.error(error);
+    });
 }
 
+// 处理文字模式 - 简化版：只调用后端API
 function processTextImage() {
     // 新版界面：文字已经直接画在 mainCanvas 上，这里从 mainCanvas 拷贝到 processedCanvas 再做处理
     const mainCanvas = document.getElementById('mainCanvas');
@@ -1308,64 +1155,57 @@ function processTextImage() {
     const width = widthInput ? parseInt(widthInput.value, 10) || mainCanvas.width : mainCanvas.width;
     const height = heightInput ? parseInt(heightInput.value, 10) || mainCanvas.height : mainCanvas.height;
 
-    const processTypeEl = document.querySelector('input[name="processType"]:checked');
-    const processType = processTypeEl ? processTypeEl.value : 'tricolor_dither';
-
     // 将主画布内容拷贝到处理画布
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
     ctx.drawImage(mainCanvas, 0, 0, width, height);
     
-    // 获取图像数据
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
+    // 将画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    const base64Data = imageDataUrl.split(',')[1];
     
-    // 重置红色通道数据
-    redChannelData = null;
+    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
     
-    // 三色屏处理
-    if (processType.startsWith('tricolor_')) {
-        redChannelData = new Array(width * height).fill(0);
-        
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            
-            // 检测红色像素
-            const isRed = (r > 200 && g < 100 && b < 100);
-            
-            if (isRed) {
-                redChannelData[i / 4] = 1;
-                data[i] = 255;
-                data[i + 1] = 0;
-                data[i + 2] = 0;
-            } else {
-                // 转为黑白
-                const gray = r * 0.299 + g * 0.587 + b * 0.114;
-                const bw = gray < 128 ? 0 : 255;
-                data[i] = data[i + 1] = data[i + 2] = bw;
-            }
+    // 调用后端 API
+    fetch(`${API_BASE}/api/epd/process-sixcolor`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders()
+        },
+        body: JSON.stringify({
+            imageData: base64Data,
+            width: width,
+            height: height
+        })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // 加载预览图到画布
+            const previewImg = new Image();
+            previewImg.onload = () => {
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(previewImg, 0, 0);
+                
+                // 保存处理后的图像数据
+                processedImageData = ctx.getImageData(0, 0, width, height);
+                
+                // 保存4bit数据（base64编码）
+                window.e6Data4bit = result.data4bit;
+                
+                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.src = 'data:image/png;base64,' + result.previewImage;
+        } else {
+            log('处理失败: ' + result.error, 'error');
         }
-        
-        log(`三色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
-    } else {
-        // 黑白处理
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const gray = r * 0.299 + g * 0.587 + b * 0.114;
-            const bw = gray < 128 ? 0 : 255;
-            data[i] = data[i + 1] = data[i + 2] = bw;
-        }
-        
-        log('文字处理完成', 'success');
-    }
-    
-    ctx.putImageData(imageData, 0, 0);
-    processedImageData = imageData;
+    })
+    .catch(error => {
+        log('处理失败: ' + error.message, 'error');
+        console.error(error);
+    });
 }
 
 // ==================== 图文混合模式 ====================
@@ -1719,137 +1559,54 @@ function processMixedImage() {
     const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
     
-    // 重置红色通道数据
-    redChannelData = null;
+    // 重置数据
+    window.e6Data4bit = null;
     
-    // 三色屏处理（黑白红）
-    if (processType === 'tricolor_dither' || processType === 'tricolor_level') {
-        redChannelData = new Array(width * height).fill(0);
-        
-        // 第一步：提取红色像素
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            
-            const isRed = (r > 100) && (r > g * 1.5) && (r > b * 1.5);
-            
-            if (isRed) {
-                redChannelData[i / 4] = 1;
-                data[i] = data[i + 1] = data[i + 2] = 255;
-            }
-        }
-        
-        // 第二步：对非红色像素进行黑白处理
-        for (let i = 0; i < data.length; i += 4) {
-            if (redChannelData[i / 4] === 0) {
-                const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-                data[i] = data[i + 1] = data[i + 2] = gray;
-            }
-        }
-        
-        if (processType === 'tricolor_dither') {
-            // Floyd-Steinberg抖动（只对非红色像素）
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const pixelIdx = y * width + x;
-                    if (redChannelData[pixelIdx] === 1) continue;
-                    
-                    const idx = pixelIdx * 4;
-                    const oldPixel = data[idx];
-                    const newPixel = oldPixel < 128 ? 0 : 255;
-                    const error = oldPixel - newPixel;
-                    
-                    data[idx] = data[idx + 1] = data[idx + 2] = newPixel;
-                    
-                    if (x + 1 < width && redChannelData[pixelIdx + 1] === 0) {
-                        const i = (pixelIdx + 1) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 7 / 16));
-                    }
-                    if (y + 1 < height) {
-                        if (x > 0 && redChannelData[pixelIdx + width - 1] === 0) {
-                            const i = (pixelIdx + width - 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 3 / 16));
-                        }
-                        if (redChannelData[pixelIdx + width] === 0) {
-                            const i = (pixelIdx + width) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 5 / 16));
-                        }
-                        if (x + 1 < width && redChannelData[pixelIdx + width + 1] === 0) {
-                            const i = (pixelIdx + width + 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 1 / 16));
-                        }
-                    }
-                }
-            }
-        } else {
-            // Level阈值
-            for (let i = 0; i < data.length; i += 4) {
-                if (redChannelData[i / 4] === 0) {
-                    const value = data[i] < 128 ? 0 : 255;
-                    data[i] = data[i + 1] = data[i + 2] = value;
-                }
-            }
-        }
-        
-        // 第三步：在预览中显示红色像素为红色
-        for (let i = 0; i < data.length; i += 4) {
-            if (redChannelData[i / 4] === 1) {
-                data[i] = 255;
-                data[i + 1] = 0;
-                data[i + 2] = 0;
-            }
-        }
-        
-        log(`三色处理完成：检测到 ${redChannelData.filter(x => x === 1).length} 个红色像素`, 'success');
-    } else {
-        // 黑白屏处理
-        for (let i = 0; i < data.length; i += 4) {
-            const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-            data[i] = data[i + 1] = data[i + 2] = gray;
-        }
-        
-        if (processType === 'dither_mono') {
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const idx = (y * width + x) * 4;
-                    const oldPixel = data[idx];
-                    const newPixel = oldPixel < 128 ? 0 : 255;
-                    const error = oldPixel - newPixel;
-                    
-                    data[idx] = data[idx + 1] = data[idx + 2] = newPixel;
-                    
-                    if (x + 1 < width) {
-                        const i = (y * width + x + 1) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 7 / 16));
-                    }
-                    if (y + 1 < height) {
-                        if (x > 0) {
-                            const i = ((y + 1) * width + x - 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 3 / 16));
-                        }
-                        const i = ((y + 1) * width + x) * 4;
-                        data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 5 / 16));
-                        
-                        if (x + 1 < width) {
-                            const i = ((y + 1) * width + x + 1) * 4;
-                            data[i] = data[i + 1] = data[i + 2] = Math.min(255, Math.max(0, data[i] + error * 1 / 16));
-                        }
-                    }
-                }
-            }
-        } else {
-            for (let i = 0; i < data.length; i += 4) {
-                const value = data[i] < 128 ? 0 : 255;
-                data[i] = data[i + 1] = data[i + 2] = value;
-            }
-        }
-        
-        log('图文混合处理完成', 'success');
-    }
+    // 将画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    const base64Data = imageDataUrl.split(',')[1];
     
-    ctx.putImageData(imageData, 0, 0);
-    processedImageData = imageData;
+    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    
+    // 调用后端 API
+    fetch(`${API_BASE}/api/epd/process-sixcolor`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders()
+        },
+        body: JSON.stringify({
+            imageData: base64Data,
+            width: width,
+            height: height
+        })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // 加载预览图到画布
+            const previewImg = new Image();
+            previewImg.onload = () => {
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(previewImg, 0, 0);
+                
+                // 保存处理后的图像数据
+                processedImageData = ctx.getImageData(0, 0, width, height);
+                
+                // 保存4bit数据（base64编码）
+                window.e6Data4bit = result.data4bit;
+                
+                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.src = 'data:image/png;base64,' + result.previewImage;
+        } else {
+            log('处理失败: ' + result.error, 'error');
+        }
+    })
+    .catch(error => {
+        log('处理失败: ' + error.message, 'error');
+        console.error(error);
+    });
 }
 
 // 重写 handleFile 以支持混合模式

@@ -813,13 +813,8 @@ function updateResolution() {
     if (!epdTypeEl) return;
     
     const epdType = parseInt(epdTypeEl.value);
-    const resolutions = {
-        0: [200, 200], 1: [200, 200], 3: [122, 250], 6: [104, 212],
-        9: [128, 296], 13: [400, 300], 14: [400, 300], 16: [600, 448],
-        19: [640, 384], 22: [800, 480], 23: [800, 480], 26: [880, 528]
-    };
-    
-    const [width, height] = resolutions[epdType] || [800, 480];
+    // 固定为7.3寸E6：800×480
+    const [width, height] = [800, 480];
     
     const widthEl = document.getElementById('width');
     const heightEl = document.getElementById('height');

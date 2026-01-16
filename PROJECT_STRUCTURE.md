@@ -3,15 +3,19 @@
 ```
 Loader_esp32wf/                      # 原项目根目录
 │
-├── 原有文件（保持不变）
-│   ├── Loader_esp32wf.ino          # 原TCP服务器代码
-│   ├── srvr.h                       # 原Web服务器
+├── 固件文件
+│   ├── Loader_esp32wf.ino          # 主程序（MQTT云端控制）
+│   ├── mqtt_config.h               # MQTT配置和处理
 │   ├── epd.h                        # 墨水屏驱动核心
+│   ├── epd7in3.h                    # 7.3" E6 驱动适配层
+│   ├── EPD_7in3e.h/cpp             # 7.3" E6 官方驱动
+│   ├── DEV_Config.h/cpp            # 硬件配置（官方Demo）
+│   ├── GUI_Paint.h/cpp             # GUI绘制库（官方Demo）
+│   ├── fonts.h                      # 字库头文件
+│   ├── font12.cpp, font24.cpp      # 字体数据
+│   ├── Debug.h                      # 调试宏
 │   ├── buff.h                       # 数据缓冲管理
-│   ├── html.h                       # 原Web界面HTML
-│   ├── css.h                        # 原样式
-│   ├── scripts.h                    # 原JavaScript
-│   └── epd*.h                       # 各型号墨水屏驱动
+│   └── [其他驱动文件已删除，仅保留7.3" E6]
 │
 ├── cloud_server/                    # 【新增】云端服务器
 │   ├── package.json                # Node.js依赖配置
@@ -240,10 +244,10 @@ dev/C3-XXXXXXXXXXXX/up/alert        # 告警（预留）
 - ❌ `Loader_esp32wf.ino` → `esp32_mqtt_epd.ino`
   - TCP服务器 → MQTT客户端
   
-- ❌ `srvr.h` → `cloud_server/server.js`
+- ❌ `srvr.h` → 已删除（不再需要本地Web服务器）
   - ESP32上的HTTP服务器 → 云端Express服务器
   
-- ❌ `html.h` + `css.h` + `scripts.h` → `cloud_server/public/`
+- ❌ `html.h` + `css.h` + `scripts.h` → 已删除（不再需要本地Web界面，使用云端界面）
   - 分离的HTML字符串 → 独立的Web文件
   - 改进的UI/UX
 

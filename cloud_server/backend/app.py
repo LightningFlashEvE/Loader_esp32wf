@@ -13,13 +13,16 @@ import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 import paho.mqtt.client as mqtt
+import tempfile
+import io
 
 from config import Config
+from six_color_epd import process_e6_image_from_base64
 
 # ==================== Flask 应用初始化 ====================
 app = Flask(__name__)
@@ -35,6 +38,11 @@ device_status_collection = None
 pages_collection = None
 page_lists_collection = None
 pairing_codes_collection = None
+
+# ==================== 临时图像数据存储 ====================
+# 用于存储待下载的图像数据（设备ID -> 数据字符串）
+image_data_cache = {}
+image_data_lock = threading.Lock()
 
 def connect_mongodb():
     """连接 MongoDB"""
@@ -1177,7 +1185,8 @@ def epd_init():
     device_id = data.get('deviceId')
     epd_type = data.get('epdType')
     
-    if not device_id or not epd_type:
+    # 检查deviceId和epdType（epdType可以是0，所以不能直接用not判断）
+    if not device_id or epd_type is None:
         return jsonify({'success': False, 'error': 'Missing deviceId or epdType'}), 400
 
     user = getattr(request, 'user', None)
@@ -1202,7 +1211,7 @@ def epd_init():
 @app.route('/api/epd/load', methods=['POST'])
 @login_required
 def epd_load():
-    """加载图片数据（仅限当前用户的设备）"""
+    """加载图片数据（仅限当前用户的设备）- 使用HTTP下载方式"""
     data = request.get_json()
     device_id = data.get('deviceId')
     image_data = data.get('data')
@@ -1215,21 +1224,54 @@ def epd_load():
     if not ensure_device_owner(device_id, user):
         return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
+    # 数据太大，无法通过MQTT传输，改用HTTP下载
+    # 将数据保存到临时缓存
+    with image_data_lock:
+        image_data_cache[device_id] = image_data
+        print(f'📦 图像数据已缓存: {device_id} - size: {len(image_data)} 字符')
+    
+    # 构建下载URL（使用设备ID和随机token防止未授权访问）
+    download_token = secrets.token_urlsafe(16)
+    download_url = f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/download/{device_id}?token={download_token}'
+    
+    # 发送DOWNLOAD命令（通过MQTT）
     topic = f'dev/{device_id}/down/epd'
     payload = {
-        'cmd': 'LOAD',
-        'data': image_data,
-        'length': length or len(image_data),
+        'cmd': 'DOWNLOAD',
+        'url': download_url,
         'timestamp': int(time.time() * 1000)
     }
     
     success, error = publish_mqtt(topic, payload)
     if success:
-        print(f'✅ Data chunk sent to {device_id} - size: {len(image_data)}')
-        return jsonify({'success': True, 'message': 'Data sent'})
+        print(f'✅ DOWNLOAD命令已发送到 {device_id} - URL: {download_url[:50]}...')
+        return jsonify({'success': True, 'message': 'Download command sent', 'url': download_url})
     else:
         print(f'❌ Publish error: {error}')
+        # 清理缓存
+        with image_data_lock:
+            image_data_cache.pop(device_id, None)
         return jsonify({'success': False, 'error': error}), 500
+
+@app.route('/api/epd/download/<device_id>', methods=['GET'])
+def epd_download(device_id):
+    """下载图像数据（ESP32通过HTTP下载）"""
+    # 从缓存中获取数据
+    with image_data_lock:
+        if device_id not in image_data_cache:
+            return jsonify({'error': 'Data not found or expired'}), 404
+        
+        image_data = image_data_cache[device_id]
+        # 下载后立即删除缓存（一次性使用）
+        del image_data_cache[device_id]
+    
+    print(f'📥 ESP32下载图像数据: {device_id} - size: {len(image_data)} 字符')
+    
+    # 返回纯文本数据（字符串格式：'a'-'p'字符）
+    return image_data, 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': str(len(image_data.encode('utf-8')))
+    }
 
 @app.route('/api/epd/next', methods=['POST'])
 @login_required
@@ -1316,6 +1358,30 @@ def epd_show():
         return jsonify({'success': False, 'error': error}), 500
 
 # ==================== API: 自研3色算法处理 ====================
+
+@app.route('/api/epd/process-sixcolor', methods=['POST'])
+@login_required
+def process_sixcolor():
+    """使用6色算法处理图片（7.3寸E6屏，仅限当前用户的设备）"""
+    try:
+        data = request.get_json()
+        image_data = data.get('imageData')
+        width = data.get('width', 800)
+        height = data.get('height', 480)
+        
+        if not image_data:
+            return jsonify({'success': False, 'error': 'Missing imageData'}), 400
+        
+        # 处理图像
+        result = process_e6_image_from_base64(image_data, width, height)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f'❌ 6色处理错误: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/epd/process-tricolor-custom', methods=['POST'])
 @login_required

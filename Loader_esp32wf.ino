@@ -13,18 +13,15 @@
 /* Includes ------------------------------------------------------------------*/
 #include <WiFi.h>
 
-/* WiFi配置 ------------------------------------------------------------------*/
-const char *ssid = "XXGF";          // 改成你的WiFi名称
-const char *password = "XXGFNXXGM";  // 改成你的WiFi密码
-
-/* 静态IP配置（可选，默认使用DHCP） ----------------------------------------*/
-IPAddress staticIP(192, 168, 10, 166);
-IPAddress gateway(192, 168, 10, 1);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress dns(223, 5, 5, 5);
+/* WiFi配网功能 ------------------------------------------------------------------*/
+#include "wifi_config.h"
 
 /* MQTT功能 ------------------------------------------------------------------*/
 #include "mqtt_config.h"
+
+/* 全局变量定义（在头文件中声明为extern）----------------------------------------*/
+Preferences preferences;  // NVS持久化存储（供wifi_config和mqtt_config共享）
+bool wifiConfigured = false;  // WiFi配网状态标志
 
 /* Entry point ----------------------------------------------------------------*/
 void setup() 
@@ -40,22 +37,33 @@ void setup()
     // SPI initialization（保留原有初始化，确保兼容）
     EPD_initSPI();
     
-    // WiFi连接 - 使用DHCP自动获取IP
+    // WiFi配网初始化
     Serial.println();
-    Serial.println();
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
+    Serial.println("========================================");
+    Serial.println("  WiFi配网初始化");
+    Serial.println("========================================");
     
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+    bool wifiConnected = initWiFiConfig();
+    
+    if (!wifiConnected) {
+        // AP配网模式
+        Serial.println();
+        Serial.println("📱 设备已进入AP配网模式");
+        Serial.println("   请按以下步骤操作：");
+        Serial.println("   1. 连接WiFi热点（名称见上方）");
+        Serial.println("   2. 访问 http://192.168.4.1");
+        Serial.println("   3. 输入WiFi名称和密码");
+        Serial.println("   4. 点击连接，设备将自动重启");
+        Serial.println();
+        Serial.println("⏳ 等待配网中...（AP模式）");
+        return;  // 在AP模式下，不初始化MQTT
     }
     
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    // WiFi已连接，继续初始化MQTT
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("  MQTT云端控制模式");
+    Serial.println("========================================");
     
     // MQTT模式初始化（会自动显示设备码）
     MQTT__setup();
@@ -66,6 +74,11 @@ void setup()
 /* The main loop -------------------------------------------------------------*/
 void loop() 
 {
-    // MQTT模式主循环
-    MQTT__loop();
+    if (wifiConfigured) {
+        // WiFi已配置，运行MQTT模式
+        MQTT__loop();
+    } else {
+        // AP配网模式，处理Web服务器请求
+        handleAPMode();
+    }
 }

@@ -542,7 +542,7 @@ struct EPD_dispInfo
 extern void EPD_load_7in3E_from_buff();  // 在epd7in3.h中定义
 EPD_dispInfo EPD_dispMass[] =
 {
-    { EPD_7in3E_init, EPD_load_7in3E_from_buff, -1, 0, EPD_7in3E_Show, "7.3 inch E" }, // 0
+    { EPD_7in3E_init, EPD_load_7in3E_from_buff, -1, 0, EPD_7in3E_Show, (char*)"7.3 inch E" }, // 0
 };
 
 /* Initialization of an e-Paper ----------------------------------------------*/

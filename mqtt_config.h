@@ -47,7 +47,7 @@
 /* 全局变量 ----------------------------------------------------------------*/
 WiFiClient mqttWifiClient;
 PubSubClient mqttClient(mqttWifiClient);
-Preferences preferences;  // NVS持久化存储
+extern Preferences preferences;  // NVS持久化存储（在Loader_esp32wf.ino中定义）
 
 String deviceId;
 String topicDownBase;
@@ -488,7 +488,7 @@ void displayDeviceCode() {
 }
 
 /* 获取设备ID（基于MAC地址） -----------------------------------------------*/
-String getDeviceIdFromMac() {
+inline String getDeviceIdFromMac() {
     uint8_t mac[6];
     WiFi.macAddress(mac);
     char buf[32];
@@ -557,7 +557,7 @@ DeviceStatusResponse queryDeviceStatus() {
     http.addHeader("Content-Type", "application/json");
     
     // 构建请求体
-    DynamicJsonDocument doc(256);
+    StaticJsonDocument<256> doc;
     doc["deviceId"] = deviceId;
     String requestBody;
     serializeJson(doc, requestBody);
@@ -568,24 +568,24 @@ DeviceStatusResponse queryDeviceStatus() {
         String response = http.getString();
         Serial.printf("✅ 云端响应: %s\n", response.c_str());
         
-        DynamicJsonDocument respDoc(1024);
+        StaticJsonDocument<1024> respDoc;
         DeserializationError error = deserializeJson(respDoc, response);
         
         if (!error) {
             result.success = true;
             result.claimed = respDoc["claimed"].as<bool>();
             
-            if (respDoc.containsKey("pairingCode")) {
+            if (respDoc["pairingCode"].is<String>()) {
                 result.hasPairingCode = true;
                 result.pairingCode = respDoc["pairingCode"].as<String>();
                 result.expiresIn = respDoc["expiresIn"].as<int>();
             }
             
-            if (respDoc.containsKey("imageUrl")) {
+            if (respDoc["imageUrl"].is<String>()) {
                 result.imageUrl = respDoc["imageUrl"].as<String>();
             }
             
-            if (respDoc.containsKey("imageVersion")) {
+            if (respDoc["imageVersion"].is<int>()) {
                 result.imageVersion = respDoc["imageVersion"].as<int>();
             }
             
@@ -659,7 +659,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     
     // 解析JSON
     Serial.println("📋 开始解析JSON...");
-    DynamicJsonDocument doc(2048);  // 2KB（足够解析命令）
+    StaticJsonDocument<2048> doc;  // 2KB（足够解析命令）
     DeserializationError error = deserializeJson(doc, payload, length);
     
     if (error) {
@@ -673,7 +673,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     
     Serial.println("✅ JSON解析成功");
     
-    if (!doc.containsKey("cmd")) {
+    if (!doc["cmd"].is<String>()) {
         Serial.println("❌ JSON中缺少cmd字段");
         Serial.println("========================================\n");
         return;
@@ -707,7 +707,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         // 加载数据（字符串格式：'a'-'p'字符，每两个字符代表一个字节）
         Serial.println("📥 收到LOAD命令");
         
-        if (!doc.containsKey("data")) {
+        if (!doc["data"].is<String>()) {
             Serial.println("❌ LOAD命令缺少data字段");
             return;
         }
@@ -749,7 +749,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         Serial.println("\n========== 收到DOWNLOAD命令 ==========");
         Serial.println("📥 HTTP下载模式");
         
-        if (!doc.containsKey("url")) {
+        if (!doc["url"].is<String>()) {
             Serial.println("❌ DOWNLOAD命令缺少url字段");
             Serial.println("   请检查后端是否正确发送了url");
             return;

@@ -683,6 +683,15 @@ function switchMode(mode) {
         if (typeof initMixedCanvas === 'function') initMixedCanvas();
     }
     
+    // 确保画布样式在所有模式下一致
+    const canvas = document.getElementById('mainCanvas');
+    if (canvas) {
+        canvas.style.maxWidth = '100%';
+        canvas.style.height = 'auto';
+        canvas.style.width = 'auto';
+        canvas.style.aspectRatio = '800 / 480';
+    }
+    
     renderCanvas();
     log(`切换到${mode === 'image' ? '图片' : mode === 'text' ? '文字' : mode === 'mixed' ? '图文' : '模板'}模式`);
 }
@@ -1042,6 +1051,23 @@ function initCanvasEvents() {
                 if (typeof updateMixedTextItemsList === 'function') updateMixedTextItemsList();
             } else {
                 selectedMixedTextId = null;
+                // 如果没有点击文字，且存在图片，则允许拖动图片
+                if (sourceImage) {
+                    canvasDragState.isDragging = true;
+                    canvasDragState.dragStartX = x;
+                    canvasDragState.dragStartY = y;
+                    // 确保变量已初始化
+                    if (typeof mixedImageScale === 'undefined') {
+                        window.mixedImageScale = 1;
+                    }
+                    if (typeof mixedCropX === 'undefined') {
+                        window.mixedCropX = 0;
+                    }
+                    if (typeof mixedCropY === 'undefined') {
+                        window.mixedCropY = 0;
+                    }
+                    console.log('[Editor] 图文模式：开始拖动图片，mixedImageScale=', window.mixedImageScale);
+                }
                 renderCanvas();
                 if (typeof updateMixedTextItemsList === 'function') updateMixedTextItemsList();
             }
@@ -1071,13 +1097,35 @@ function initCanvasEvents() {
                 item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
                 renderCanvas();
             }
-        } else if (currentMode === 'mixed' && selectedMixedTextId) {
-            const item = mixedTextItems.find(t => t.id === selectedMixedTextId);
-            if (item) {
-                const newX = x - canvasDragState.itemOffsetX;
-                const newY = y - canvasDragState.itemOffsetY;
-                item.x = Math.max(0, Math.min(canvas.width - 10, newX));
-                item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
+        } else if (currentMode === 'mixed') {
+            if (selectedMixedTextId) {
+                // 拖动文字
+                const item = mixedTextItems.find(t => t.id === selectedMixedTextId);
+                if (item) {
+                    const newX = x - canvasDragState.itemOffsetX;
+                    const newY = y - canvasDragState.itemOffsetY;
+                    item.x = Math.max(0, Math.min(canvas.width - 10, newX));
+                    item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
+                    renderCanvas();
+                }
+            } else if (sourceImage) {
+                // 拖动图片
+                const scale = (typeof window.mixedImageScale !== 'undefined' && window.mixedImageScale > 0) ? window.mixedImageScale : 
+                              (typeof mixedImageScale !== 'undefined' && mixedImageScale > 0) ? mixedImageScale : 1;
+                const dx = (x - canvasDragState.dragStartX) / scale;
+                const dy = (y - canvasDragState.dragStartY) / scale;
+                
+                // 使用全局变量或局部变量
+                if (typeof window.mixedCropX !== 'undefined') {
+                    window.mixedCropX = Math.max(0, Math.min(sourceImage.width - canvas.width / scale, window.mixedCropX - dx));
+                    window.mixedCropY = Math.max(0, Math.min(sourceImage.height - canvas.height / scale, window.mixedCropY - dy));
+                } else if (typeof mixedCropX !== 'undefined') {
+                    mixedCropX = Math.max(0, Math.min(sourceImage.width - canvas.width / scale, mixedCropX - dx));
+                    mixedCropY = Math.max(0, Math.min(sourceImage.height - canvas.height / scale, mixedCropY - dy));
+                }
+                
+                canvasDragState.dragStartX = x;
+                canvasDragState.dragStartY = y;
                 renderCanvas();
             }
         } else if (currentMode === 'image' && sourceImage) {
@@ -1126,13 +1174,35 @@ function initCanvasEvents() {
                 item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
                 renderCanvas();
             }
-        } else if (currentMode === 'mixed' && selectedMixedTextId) {
-            const item = mixedTextItems.find(t => t.id === selectedMixedTextId);
-            if (item) {
-                const newX = x - canvasDragState.itemOffsetX;
-                const newY = y - canvasDragState.itemOffsetY;
-                item.x = Math.max(0, Math.min(canvas.width - 10, newX));
-                item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
+        } else if (currentMode === 'mixed') {
+            if (selectedMixedTextId) {
+                // 拖动文字
+                const item = mixedTextItems.find(t => t.id === selectedMixedTextId);
+                if (item) {
+                    const newX = x - canvasDragState.itemOffsetX;
+                    const newY = y - canvasDragState.itemOffsetY;
+                    item.x = Math.max(0, Math.min(canvas.width - 10, newX));
+                    item.y = Math.max(0, Math.min(canvas.height - item.size, newY));
+                    renderCanvas();
+                }
+            } else if (sourceImage) {
+                // 拖动图片
+                const scale = (typeof window.mixedImageScale !== 'undefined' && window.mixedImageScale > 0) ? window.mixedImageScale : 
+                              (typeof mixedImageScale !== 'undefined' && mixedImageScale > 0) ? mixedImageScale : 1;
+                const dx = (x - canvasDragState.dragStartX) / scale;
+                const dy = (y - canvasDragState.dragStartY) / scale;
+                
+                // 使用全局变量或局部变量
+                if (typeof window.mixedCropX !== 'undefined') {
+                    window.mixedCropX = Math.max(0, Math.min(sourceImage.width - canvas.width / scale, window.mixedCropX - dx));
+                    window.mixedCropY = Math.max(0, Math.min(sourceImage.height - canvas.height / scale, window.mixedCropY - dy));
+                } else if (typeof mixedCropX !== 'undefined') {
+                    mixedCropX = Math.max(0, Math.min(sourceImage.width - canvas.width / scale, mixedCropX - dx));
+                    mixedCropY = Math.max(0, Math.min(sourceImage.height - canvas.height / scale, mixedCropY - dy));
+                }
+                
+                canvasDragState.dragStartX = x;
+                canvasDragState.dragStartY = y;
                 renderCanvas();
             }
         }
@@ -1187,9 +1257,16 @@ function renderCanvas() {
     } else if (currentMode === 'mixed') {
         // 绘制图片和文字
         if (sourceImage) {
-            const srcWidth = canvas.width / mixedImageScale;
-            const srcHeight = canvas.height / mixedImageScale;
-            ctx.drawImage(sourceImage, mixedCropX, mixedCropY, srcWidth, srcHeight, 0, 0, canvas.width, canvas.height);
+            // 优先使用全局变量，然后是局部变量
+            const scale = (typeof window.mixedImageScale !== 'undefined' && window.mixedImageScale > 0) ? window.mixedImageScale : 
+                          (typeof mixedImageScale !== 'undefined' && mixedImageScale > 0) ? mixedImageScale : 1;
+            const cropX = (typeof window.mixedCropX !== 'undefined') ? window.mixedCropX : 
+                          (typeof mixedCropX !== 'undefined') ? mixedCropX : 0;
+            const cropY = (typeof window.mixedCropY !== 'undefined') ? window.mixedCropY : 
+                          (typeof mixedCropY !== 'undefined') ? mixedCropY : 0;
+            const srcWidth = canvas.width / scale;
+            const srcHeight = canvas.height / scale;
+            ctx.drawImage(sourceImage, cropX, cropY, srcWidth, srcHeight, 0, 0, canvas.width, canvas.height);
         }
         
         mixedTextItems.forEach(item => {

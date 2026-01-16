@@ -22,15 +22,37 @@
             padding: 30px;
             margin-bottom: 20px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            position: relative;
         }
         .header h1 {
             color: #667eea;
             font-size: 2em;
             margin-bottom: 10px;
+            text-align: center;
         }
         .header p {
             color: #666;
             font-size: 1.1em;
+            text-align: center;
+        }
+        .logout-btn {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            padding: 10px 20px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .logout-btn:hover {
+            background: #c82333;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(220, 53, 69, 0.4);
         }
         .add-device {
             background: white;
@@ -217,7 +239,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>📱 ESP32 设备管理</h1>
+            <button class="logout-btn" onclick="logout()">🚪 退出登录</button>
+            <h1>现象光伏智能墨水屏管理系统</h1>
             <p>管理多个ESP32墨水屏设备</p>
         </div>
         

@@ -22,7 +22,7 @@
             --border: #e2e8f0;
             --sidebar-width: 280px;
             --header-height: 60px;
-            --right-panel-width: 300px;
+            --right-panel-width: 450px;
         }
         
         body { 
@@ -253,6 +253,7 @@
             flex-direction: column;
             background: #e2e8f0;
             overflow: hidden;
+            min-width: 0; /* 确保flex子元素可以缩小 */
         }
         
         .toolbar {
@@ -331,6 +332,7 @@
             justify-content: center;
             padding: 30px;
             overflow: auto;
+            min-height: 0; /* 确保flex子元素可以缩小 */
         }
         
         .canvas-container {
@@ -355,6 +357,7 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            min-width: 0; /* 确保flex子元素可以缩小 */
         }
         
         .panel-tabs {
@@ -386,7 +389,9 @@
         .panel-content {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 15px;
+            min-height: 0; /* 确保flex子元素可以缩小 */
         }
         
         .panel-section {
@@ -750,7 +755,7 @@
         /* ===== 响应式 ===== */
         @media (max-width: 1200px) {
             .right-panel {
-                width: 260px;
+                width: 390px;
             }
         }
         
@@ -759,7 +764,7 @@
                 width: 220px;
             }
             .right-panel {
-                width: 240px;
+                width: 360px;
             }
         }
     </style>
@@ -902,8 +907,11 @@
                                 <label>颜色</label>
                                 <select id="newTextColor">
                                     <option value="black">⬛ 黑</option>
-                                    <option value="red">🟥 红</option>
                                     <option value="white">⬜ 白</option>
+                                    <option value="red">🟥 红</option>
+                                    <option value="green">🟩 绿</option>
+                                    <option value="blue">🟦 蓝</option>
+                                    <option value="yellow">🟨 黄</option>
                                 </select>
                             </div>
                         </div>
@@ -965,9 +973,12 @@
                             <div class="form-group">
                                 <label>颜色</label>
                                 <select id="mixedTextColor">
-                                    <option value="black">⬛</option>
-                                    <option value="red">🟥</option>
-                                    <option value="white">⬜</option>
+                                    <option value="black">⬛ 黑</option>
+                                    <option value="white">⬜ 白</option>
+                                    <option value="red">🟥 红</option>
+                                    <option value="green">🟩 绿</option>
+                                    <option value="blue">🟦 蓝</option>
+                                    <option value="yellow">🟨 黄</option>
                                 </select>
                             </div>
                         </div>

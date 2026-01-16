@@ -424,9 +424,20 @@ function processImage() {
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
     
-    // 绘制图片（使用裁剪框位置和缩放）
-    ctx.fillStyle = 'white';
+    // 清空预览画布，显示处理中状态
+    ctx.fillStyle = '#f0f0f0';
     ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#999';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('处理中...', width / 2, height / 2);
+    
+    // 创建临时画布用于发送到后端
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
     
     // 计算源图像的裁剪区域
     const srcX = cropX;
@@ -434,23 +445,27 @@ function processImage() {
     const srcWidth = width / imageScale;
     const srcHeight = height / imageScale;
     
-    // 从源图像绘制到目标画布
+    // 从源图像绘制到临时画布
     if (mainCanvas && sourceImage) {
         // 新版界面：直接从源图像绘制
-        ctx.drawImage(sourceImage, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
+        tempCtx.drawImage(sourceImage, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
     } else if (sourceCanvas) {
         // 旧版界面：从源画布绘制
-        ctx.drawImage(sourceCanvas, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
+        tempCtx.drawImage(sourceCanvas, srcX, srcY, srcWidth, srcHeight, 0, 0, width, height);
     } else {
         log('没有可处理的图像', 'error');
         return;
     }
     
-    // 将画布转换为 base64 PNG，发送到后端处理
-    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    // 将临时画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
     log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    
+    // 显示进度条
+    showProgress('正在处理图像...');
+    updateProgress(10);
     
     // 调用后端 API
     fetch(`${API_BASE}/api/epd/process-sixcolor`, {
@@ -465,12 +480,17 @@ function processImage() {
             height: height
         })
     })
-    .then(response => response.json())
+    .then(response => {
+        updateProgress(50);
+        return response.json();
+    })
     .then(result => {
+        updateProgress(70);
         if (result.success) {
             // 加载预览图到画布
             const previewImg = new Image();
             previewImg.onload = () => {
+                updateProgress(90);
                 ctx.clearRect(0, 0, width, height);
                 ctx.drawImage(previewImg, 0, 0);
                 
@@ -480,14 +500,25 @@ function processImage() {
                 // 保存4bit数据（base64编码）
                 window.e6Data4bit = result.data4bit; // 4bit数据（base64）
                 
+                updateProgress(100);
+                setTimeout(() => {
+                    hideProgress();
+                }, 500);
+                
                 log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.onerror = () => {
+                hideProgress();
+                log('预览图加载失败', 'error');
             };
             previewImg.src = 'data:image/png;base64,' + result.previewImage;
         } else {
+            hideProgress();
             log('处理失败: ' + result.error, 'error');
         }
     })
     .catch(error => {
+        hideProgress();
         log('处理失败: ' + error.message, 'error');
         console.error(error);
     });
@@ -723,6 +754,7 @@ async function uploadToDevice() {
         
         hideProgress();
         log('下发完成！', 'success');
+        log('请等待30秒刷新...', 'info');
 
         // 更新顶部“最近下发时间”显示
         const lastUpdateEl = document.getElementById('lastUpdateDisplay');
@@ -1087,14 +1119,29 @@ function processTemplateImage() {
     const width = parseInt(document.getElementById('width').value);
     const height = parseInt(document.getElementById('height').value);
     
-    // 复制主画布到处理画布
+    // 设置处理画布大小，先显示处理中状态
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
-    ctx.drawImage(mainCanvas, 0, 0);
     
-    // 将画布转换为 base64 PNG，发送到后端处理
-    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    // 清空预览画布，显示处理中状态
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#999';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('处理中...', width / 2, height / 2);
+    
+    // 将主画布内容拷贝到临时变量（用于发送到后端）
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(mainCanvas, 0, 0);
+    
+    // 将临时画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
     log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
@@ -1159,7 +1206,22 @@ function processTextImage() {
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
-    ctx.drawImage(mainCanvas, 0, 0, width, height);
+    
+    // 先清空预览画布，显示处理中状态
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#999';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('处理中...', width / 2, height / 2);
+    
+    // 将主画布内容拷贝到临时变量（用于发送到后端）
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(mainCanvas, 0, 0, width, height);
     
     // 将画布转换为 base64 PNG，发送到后端处理
     const imageDataUrl = processedCanvas.toDataURL('image/png');
@@ -1220,7 +1282,11 @@ function initMixedCanvas() {
     
     canvas.width = width;
     canvas.height = height;
+    // 统一画布样式，确保所有模式下显示一致
     canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
+    canvas.style.width = 'auto';
+    canvas.style.aspectRatio = '800 / 480';
     
     // 重置缩放
     mixedImageScale = 1;
@@ -1522,22 +1588,40 @@ function bindMixedCanvasEvents() {
 }
 
 function processMixedImage() {
+    console.log('[processMixedImage] 开始处理图文模式');
+    
     // 新版界面：使用 mainCanvas 而不是 mixedCanvas
     const mainCanvas = document.getElementById('mainCanvas');
     const processedCanvas = document.getElementById('processedCanvas');
-    const width = parseInt(document.getElementById('width').value);
-    const height = parseInt(document.getElementById('height').value);
-    const processType = document.querySelector('input[name="processType"]:checked').value;
+    const widthEl = document.getElementById('width');
+    const heightEl = document.getElementById('height');
+    
+    if (!widthEl || !heightEl) {
+        log('找不到宽度/高度输入框', 'error');
+        console.error('[processMixedImage] 找不到宽度/高度输入框');
+        return;
+    }
+    
+    const width = parseInt(widthEl.value) || 800;
+    const height = parseInt(heightEl.value) || 480;
+    
+    // 检查是否有处理类型选择器（可能不存在）
+    const processTypeEl = document.querySelector('input[name="processType"]:checked');
+    const processType = processTypeEl ? processTypeEl.value : 'sixcolor';
     
     if (!mainCanvas) {
         log('找不到主画布', 'error');
+        console.error('[processMixedImage] 找不到主画布');
         return;
     }
     
     if (!processedCanvas) {
         log('找不到处理画布', 'error');
+        console.error('[processMixedImage] 找不到处理画布');
         return;
     }
+    
+    console.log('[processMixedImage] 画布尺寸:', width, height);
     
     // 确保主画布尺寸正确
     if (mainCanvas.width !== width || mainCanvas.height !== height) {
@@ -1549,24 +1633,39 @@ function processMixedImage() {
         }
     }
     
-    // 复制主画布到处理画布
+    // 设置处理画布大小，先显示处理中状态
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d');
-    ctx.drawImage(mainCanvas, 0, 0);
     
-    // 获取图像数据
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
+    // 清空预览画布，显示处理中状态
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#999';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('处理中...', width / 2, height / 2);
+    
+    // 将主画布内容拷贝到临时变量（用于发送到后端）
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(mainCanvas, 0, 0);
     
     // 重置数据
     window.e6Data4bit = null;
     
-    // 将画布转换为 base64 PNG，发送到后端处理
-    const imageDataUrl = processedCanvas.toDataURL('image/png');
+    // 将临时画布转换为 base64 PNG，发送到后端处理
+    const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
     log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    
+    // 显示进度条
+    showProgress('正在处理图像...');
+    updateProgress(10);
     
     // 调用后端 API
     fetch(`${API_BASE}/api/epd/process-sixcolor`, {
@@ -1581,12 +1680,17 @@ function processMixedImage() {
             height: height
         })
     })
-    .then(response => response.json())
+    .then(response => {
+        updateProgress(50);
+        return response.json();
+    })
     .then(result => {
+        updateProgress(70);
         if (result.success) {
             // 加载预览图到画布
             const previewImg = new Image();
             previewImg.onload = () => {
+                updateProgress(90);
                 ctx.clearRect(0, 0, width, height);
                 ctx.drawImage(previewImg, 0, 0);
                 
@@ -1596,14 +1700,25 @@ function processMixedImage() {
                 // 保存4bit数据（base64编码）
                 window.e6Data4bit = result.data4bit;
                 
+                updateProgress(100);
+                setTimeout(() => {
+                    hideProgress();
+                }, 500);
+                
                 log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+            };
+            previewImg.onerror = () => {
+                hideProgress();
+                log('预览图加载失败', 'error');
             };
             previewImg.src = 'data:image/png;base64,' + result.previewImage;
         } else {
+            hideProgress();
             log('处理失败: ' + result.error, 'error');
         }
     })
     .catch(error => {
+        hideProgress();
         log('处理失败: ' + error.message, 'error');
         console.error(error);
     });

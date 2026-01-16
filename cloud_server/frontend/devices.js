@@ -362,3 +362,16 @@ document.getElementById('deviceName').addEventListener('keypress', (e) => {
         addDevice();
     }
 });
+
+// 退出登录
+function logout() {
+    if (confirm('确定要退出登录吗？')) {
+        if (typeof clearAuth === 'function') {
+            clearAuth();
+        } else {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+        window.location.href = 'login.html';
+    }
+}

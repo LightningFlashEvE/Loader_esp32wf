@@ -37,7 +37,11 @@ String savedPassword = "";
  * 检查配网状态
  */
 bool checkWiFiConfigured() {
-    preferences.begin(CONFIG_NAMESPACE, true);  // 只读模式
+    if (!preferences.begin(CONFIG_NAMESPACE, true)) {  // 只读模式
+        // NVS命名空间不存在（第一次使用），这是正常的
+        preferences.end();
+        return false;
+    }
     bool configured = preferences.getBool(CONFIG_CONFIGURED_KEY, false);
     if (configured) {
         savedSSID = preferences.getString(CONFIG_SSID_KEY, "");
@@ -51,7 +55,10 @@ bool checkWiFiConfigured() {
  * 保存WiFi配置
  */
 void saveWiFiConfig(String ssid, String password) {
-    preferences.begin(CONFIG_NAMESPACE, false);  // 读写模式
+    if (!preferences.begin(CONFIG_NAMESPACE, false)) {  // 读写模式
+        Serial.println("⚠️  NVS命名空间打开失败，无法保存WiFi配置");
+        return;
+    }
     preferences.putString(CONFIG_SSID_KEY, ssid);
     preferences.putString(CONFIG_PASSWORD_KEY, password);
     preferences.putBool(CONFIG_CONFIGURED_KEY, true);
@@ -63,7 +70,11 @@ void saveWiFiConfig(String ssid, String password) {
  * 清除WiFi配置
  */
 void clearWiFiConfig() {
-    preferences.begin(CONFIG_NAMESPACE, false);
+    if (!preferences.begin(CONFIG_NAMESPACE, false)) {
+        // NVS命名空间不存在，无需清除
+        preferences.end();
+        return;
+    }
     preferences.remove(CONFIG_SSID_KEY);
     preferences.remove(CONFIG_PASSWORD_KEY);
     preferences.putBool(CONFIG_CONFIGURED_KEY, false);

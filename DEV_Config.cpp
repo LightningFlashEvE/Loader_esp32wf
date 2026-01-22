@@ -46,6 +46,15 @@ void GPIO_Config(void)
 
     digitalWrite(EPD_CS_PIN , HIGH);
     digitalWrite(EPD_SCK_PIN, LOW);
+    
+    // 初始化GPIO12和GPIO13为低电平（保持原有配置）
+    pinMode(12, OUTPUT);
+    pinMode(13, OUTPUT);
+    digitalWrite(12, LOW);
+    digitalWrite(13, LOW);
+    
+    // 注意：墨水屏引脚已更改，避免与外部Flash冲突
+    // 新引脚：SCK=2, MOSI=3, CS=4, RST=6, DC=7, BUSY=8
 }
 
 void GPIO_Mode(UWORD GPIO_Pin, UWORD Mode)

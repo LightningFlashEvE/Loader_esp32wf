@@ -40,12 +40,13 @@
 #define UDOUBLE uint32_t
 
 // GPIO配置（与epd.h保持一致）
-#define EPD_SCK_PIN  13
-#define EPD_MOSI_PIN 14
-#define EPD_CS_PIN   15
-#define EPD_RST_PIN  26
-#define EPD_DC_PIN   27
-#define EPD_BUSY_PIN 25
+// 更改引脚以避免与外部Flash冲突（外部Flash使用GPIO14/15/16/17）
+#define EPD_SCK_PIN  2   // SPI时钟（原GPIO13）
+#define EPD_MOSI_PIN 3   // SPI数据（原GPIO14，避免与外部Flash CS冲突）
+#define EPD_CS_PIN   4   // SPI片选（原GPIO15，避免与外部Flash CLK冲突）
+#define EPD_RST_PIN  6   // 复位（原GPIO26）
+#define EPD_DC_PIN   7   // 数据/命令（原GPIO27）
+#define EPD_BUSY_PIN 8   // 忙信号（原GPIO25）
 
 // 根据实际使用的硬件启用或禁用，以及对应的引脚
 #define D_9PIN  0

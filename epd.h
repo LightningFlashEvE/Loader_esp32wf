@@ -25,17 +25,19 @@
   */
 /* SPI pin definition --------------------------------------------------------*/
 //#include "epd7in5_HD.h"
+// 更改引脚以避免与外部Flash冲突（外部Flash使用GPIO14/15/16/17）
 
-#define PIN_SPI_SCK  13
-#define PIN_SPI_DIN  14
-#define PIN_SPI_CS   15
-#define PIN_SPI_BUSY 25//19
-#define PIN_SPI_RST  26//21
-#define PIN_SPI_DC   27//22
+#define PIN_SPI_SCK  2   // SPI时钟（原GPIO13）
+#define PIN_SPI_DIN  3   // SPI数据（原GPIO14，避免与外部Flash CS冲突）
+#define PIN_SPI_CS   4   // SPI片选（原GPIO15，避免与外部Flash CLK冲突）
+#define PIN_SPI_BUSY 8   // 忙信号（原GPIO25）
+#define PIN_SPI_RST  6   // 复位（原GPIO26）
+#define PIN_SPI_DC   7   // 数据/命令（原GPIO27）
 
-#define PIN_SPI_CS_M    15
-#define PIN_SPI_CS_S    2
-#define PIN_SPI_PWR     33
+#define PIN_SPI_CS_M    4   // 主片选（更新）
+#define PIN_SPI_CS_S    2   // 从片选（保持不变）
+// ESP32-C3没有GPIO33，只有GPIO0-21，所以注释掉电源控制引脚
+// #define PIN_SPI_PWR     33  // 电源控制（ESP32-C3不支持）
 
 /* Pin level definition ------------------------------------------------------*/
 // 注意：LOW 和 HIGH 已在 ESP32 核心库中定义，这里不再重复定义
@@ -56,11 +58,11 @@ void EPD_initSPI()
     pinMode(PIN_SPI_CS , OUTPUT);
 
     pinMode(PIN_SPI_CS_S , OUTPUT);
-    pinMode(PIN_SPI_PWR , OUTPUT);
 
     digitalWrite(PIN_SPI_CS, HIGH);
     digitalWrite(PIN_SPI_CS_S, HIGH);
-    digitalWrite(PIN_SPI_PWR, HIGH);
+    // ESP32-C3没有GPIO33，注释掉电源控制
+    // digitalWrite(PIN_SPI_PWR, HIGH);
     digitalWrite(PIN_SPI_SCK, LOW);
 }
 

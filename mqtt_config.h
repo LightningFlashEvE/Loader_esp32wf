@@ -77,7 +77,7 @@ const char* PREF_KEY_CLAIMED = "claimed";
 
 // Flash临时存储配置（用于接收图像数据，避免内存不足）
 #define FLASH_TEMP_FILE "/temp_image.bin"  // 临时文件路径
-File flashTempFile;  // Flash临时文件句柄
+File flashTempFile;  // Flash文件句柄
 bool flashTempFileOpen = false;  // 文件是否已打开
 int flashTempFileSize = 0;  // 已写入的数据大小
 
@@ -512,7 +512,12 @@ inline String getDeviceIdFromMac() {
 
 /* 读取本地持久化的claimed状态 ---------------------------------------------*/
 bool loadClaimedStatus() {
-    preferences.begin(PREF_NAMESPACE, true);  // 只读模式
+    if (!preferences.begin(PREF_NAMESPACE, true)) {  // 只读模式
+        // NVS命名空间不存在（第一次使用），这是正常的
+        preferences.end();
+        Serial.println("📖 读取本地绑定状态: 未绑定（首次使用）");
+        return false;
+    }
     bool claimed = preferences.getBool(PREF_KEY_CLAIMED, false);
     preferences.end();
     Serial.printf("📖 读取本地绑定状态: %s\n", claimed ? "已绑定" : "未绑定");
@@ -521,7 +526,10 @@ bool loadClaimedStatus() {
 
 /* 保存本地持久化的claimed状态 ---------------------------------------------*/
 void saveClaimedStatus(bool claimed) {
-    preferences.begin(PREF_NAMESPACE, false);  // 读写模式
+    if (!preferences.begin(PREF_NAMESPACE, false)) {  // 读写模式
+        Serial.println("⚠️  NVS命名空间打开失败，无法保存绑定状态");
+        return;
+    }
     preferences.putBool(PREF_KEY_CLAIMED, claimed);
     preferences.end();
     Serial.printf("💾 保存本地绑定状态: %s\n", claimed ? "已绑定" : "未绑定");
@@ -1003,16 +1011,19 @@ bool initFlashStorage() {
     
     // 尝试挂载SPIFFS（先尝试不格式化）
     if (!SPIFFS.begin(false)) {
-        Serial.println("⚠️  SPIFFS挂载失败，尝试格式化...");
+        Serial.println("⚠️  SPIFFS挂载失败（首次使用或分区未格式化），尝试格式化...");
+        Serial.println("   这是正常现象，首次使用时需要格式化分区");
         
         // 如果挂载失败，尝试格式化
         if (!SPIFFS.format()) {
             Serial.println("❌ SPIFFS格式化失败");
-            Serial.println("   可能原因：分区表未配置SPIFFS分区");
+            Serial.println("   可能原因：分区表未正确烧录到设备");
             Serial.println("   解决方案：");
-            Serial.println("   1. 在Arduino IDE中选择包含SPIFFS的分区方案，或");
-            Serial.println("   2. 使用项目根目录的 partitions.csv 文件");
-            Serial.println("   3. 在Arduino IDE中：工具 -> Partition Scheme -> 选择包含SPIFFS的方案");
+            Serial.println("   1. 确认partitions.csv文件存在且包含spiffs分区");
+            Serial.println("   2. 在Arduino IDE中：工具 -> Partition Scheme -> 选择custom");
+            Serial.println("   3. 工具 -> Erase Flash -> All Flash Contents");
+            Serial.println("   4. 重新编译并烧录");
+            Serial.println("   注意：格式化会清除所有数据，但这是首次使用的必要步骤");
             return false;
         }
         
@@ -1021,7 +1032,12 @@ bool initFlashStorage() {
         // 格式化后重新挂载
         if (!SPIFFS.begin(false)) {
             Serial.println("❌ SPIFFS重新挂载失败");
-            Serial.println("   错误代码可能表示分区不存在");
+            Serial.println("   可能原因：");
+            Serial.println("   - 分区表未正确烧录到设备");
+            Serial.println("   - 分区类型不匹配");
+            Serial.println("   解决方案：");
+            Serial.println("   1. 检查partitions.csv配置");
+            Serial.println("   2. 完全擦除Flash后重新烧录");
             return false;
         }
     }
@@ -1065,7 +1081,7 @@ void clearFlashTempFile() {
 
 /* MQTT模式初始化 ----------------------------------------------------------*/
 void MQTT__setup() {
-    // 初始化Flash存储（SPIFFS）
+    // 初始化Flash存储（SPIFFS分区）
     initFlashStorage();
     
     // 设置默认屏幕型号：7.3" E6（唯一型号，索引 0）

@@ -54,7 +54,7 @@ String topicDownBase;
 String topicUpStatus;
 
 unsigned long lastReportMs = 0;
-const unsigned long REPORT_INTERVAL_MS = 30000;
+const unsigned long REPORT_INTERVAL_MS = 5000;  // 5秒上报一次
 
 // 全局图像缓冲区（用于显示设备码，避免重复分配）
 // 使用半尺寸缓冲区（400x240，48KB），足够显示设备码
@@ -67,7 +67,7 @@ UBYTE globalImageBuffer[GLOBAL_IMAGE_BUFFER_SIZE];  // 静态分配，不占用�
 // 设备激活状态
 bool deviceActivated = false;
 unsigned long deviceStartupTime = 0;
-const unsigned long STARTUP_WAIT_MS = 5000;  // 启动后等待5秒
+const unsigned long STARTUP_WAIT_MS = 2000;  // 启动后等待2秒（优化：减少等待时间）
 bool deviceCodeShown = false;
 
 // 设备绑定状态（本地持久化）
@@ -134,12 +134,13 @@ void displayDeviceCode() {
     // 使用官方Demo驱动：初始化（按照官方Demo流程）
     EPD_7IN3E_Init();
     
-    // 清屏为白色（Clear内部会刷新显示）
-    EPD_7IN3E_Clear(EPD_7IN3E_WHITE);
-    delay(1000);  // 等待清屏完成，参考官方Demo
+    // 优化：跳过清屏操作，直接显示设备码，减少等待时间
+    // 如果屏幕之前有内容，直接覆盖显示即可
+    // EPD_7IN3E_Clear(EPD_7IN3E_WHITE);  // 注释掉清屏，节省时间
+    // delay(1000);  // 不需要等待清屏
     
-    // 重新初始化准备写入新图像（Clear后需要重新Init才能写入）
-    EPD_7IN3E_Init();
+    // 不需要重新初始化，直接使用
+    // EPD_7IN3E_Init();  // 注释掉重复初始化
 
     // 使用GUI_Paint库绘制设备码（使用官方字库）
     String code = deviceId;
@@ -213,276 +214,18 @@ void displayDeviceCode() {
         pStr++;
     }
     
-    // 参考云端下发的处理方式：先存到flash，再慢慢搬（流式处理）
-    // 1. 将半尺寸缓冲区转换为全尺寸4bit数据，编码后写入Flash
-    Serial.println("💾 将设备码图像数据写入Flash（参考云端下发方式）...");
+    // 优化：直接使用 DisplayPart 显示，跳过Flash读写，大幅减少时间
+    // 设备码显示不需要全屏刷新，只需要局部显示即可
+    Serial.println("📺 直接显示设备码（优化：跳过Flash操作）...");
     
-    // 定义设备码临时文件
-    const char* DEVICE_CODE_FILE = "/device_code.bin";
+    // 计算居中位置
+    UWORD xstart = (width - paintWidth) / 2;
+    UWORD ystart = (height - paintHeight) / 2;
     
-    // 删除旧文件（如果存在）
-    if (SPIFFS.exists(DEVICE_CODE_FILE)) {
-        SPIFFS.remove(DEVICE_CODE_FILE);
-    }
+    Serial.printf("   显示位置: (%d, %d), 尺寸: %dx%d\n", xstart, ystart, paintWidth, paintHeight);
     
-    // 打开文件准备写入
-    File codeFile = SPIFFS.open(DEVICE_CODE_FILE, "w");
-    if (!codeFile) {
-        Serial.println("❌ 无法创建设备码临时文件");
-        // 回退到直接显示
-        UWORD xstart = (width - paintWidth) / 2;
-        UWORD ystart = (height - paintHeight) / 2;
-        EPD_7IN3E_DisplayPart(imageBuffer, xstart, ystart, paintWidth, paintHeight);
-        return;
-    }
-    
-    // 将半尺寸缓冲区放大到全尺寸，并转换为4bit格式写入Flash
-    int fullPackedWidth = (width + 1) / 2;  // 400
-    int totalBytesWritten = 0;
-    
-    // 使用小缓冲区逐行处理（避免大内存分配）
-    UBYTE *rowBuffer = (UBYTE *)malloc(fullPackedWidth);
-    if (!rowBuffer) {
-        Serial.println("❌ 行缓冲区分配失败，回退到直接显示");
-        codeFile.close();
-        UWORD xstart = (width - paintWidth) / 2;
-        UWORD ystart = (height - paintHeight) / 2;
-        EPD_7IN3E_DisplayPart(imageBuffer, xstart, ystart, paintWidth, paintHeight);
-        return;
-    }
-    
-    Serial.println("📝 开始转换并写入Flash（逐行处理）...");
-    
-    // 逐行处理：将半尺寸数据放大到全尺寸，转换为4bit，编码后写入Flash
-    for (int fullY = 0; fullY < height; fullY++) {
-        int halfY = fullY / 2;  // 对应的半尺寸行
-        
-        // 填充一行数据（放大2倍）
-        for (int fullX = 0; fullX < width; fullX += 2) {
-            int halfX = fullX / 2;
-            int halfXByte = halfX / 2;  // 半尺寸缓冲区中的字节索引
-            int halfXBit = (halfX % 2) * 4;  // 字节内的位偏移
-            
-            if (halfXByte < halfPackedWidth && halfY < paintHeight) {
-                // 从半尺寸缓冲区读取像素对
-                UBYTE pixelPair = imageBuffer[halfY * halfPackedWidth + halfXByte];
-                
-                // 提取两个4bit像素
-                UBYTE pixel1 = (pixelPair >> 4) & 0x0F;
-                UBYTE pixel2 = pixelPair & 0x0F;
-                
-                // 写入全尺寸行缓冲区（每个像素对占一个字节）
-                int byteIdx = fullX / 2;
-                if (byteIdx < fullPackedWidth) {
-                    rowBuffer[byteIdx] = (pixel1 << 4) | pixel2;
-                }
-            } else {
-                // 超出范围，用白色填充
-                int byteIdx = fullX / 2;
-                if (byteIdx < fullPackedWidth) {
-                    rowBuffer[byteIdx] = 0x11;  // 两个白色像素
-                }
-            }
-        }
-        
-        // 将一行4bit数据编码为字符格式（'a'-'p'）并写入Flash
-        for (int col = 0; col < fullPackedWidth; col++) {
-            UBYTE byte = rowBuffer[col];
-            UBYTE low = byte & 0x0F;
-            UBYTE high = (byte >> 4) & 0x0F;
-            
-            // 编码为字符（'a'=0, 'b'=1, ..., 'p'=15）
-            char c1 = 'a' + low;
-            char c2 = 'a' + high;
-            
-            codeFile.write(c1);
-            codeFile.write(c2);
-            totalBytesWritten += 2;
-        }
-        
-        // 每50行输出一次进度
-        if ((fullY + 1) % 50 == 0) {
-            Serial.printf("   进度: %d/%d 行 (%.1f%%)\n", fullY + 1, height, 
-                          (fullY + 1) * 100.0 / height);
-        }
-    }
-    
-    free(rowBuffer);
-    codeFile.close();
-    
-    Serial.printf("✅ 已写入Flash: %d 字符 (%.2f KB)\n", totalBytesWritten, totalBytesWritten / 1024.0);
-    
-    // 2. 从Flash流式读取并显示（参考EPD_load_7in3E_from_buff的方式）
-    Serial.println("📺 从Flash流式读取并显示设备码...");
-    
-    // 打开Flash文件
-    File file = SPIFFS.open(DEVICE_CODE_FILE, "r");
-    if (!file) {
-        Serial.println("❌ 无法打开设备码文件");
-        return;
-    }
-    
-    int fileSize = file.size();
-    Serial.printf("📁 Flash文件大小: %d 字符\n", fileSize);
-    
-    // 初始化EPD
-    EPD_7IN3E_Init();
-    
-    // 分配行缓冲区（400字节）
-    rowBuffer = (UBYTE *)malloc(fullPackedWidth);
-    if (!rowBuffer) {
-        Serial.printf("❌ 行缓冲区分配失败！需要 %d 字节\n", fullPackedWidth);
-        file.close();
-        return;
-    }
-    
-    Serial.printf("✅ 行缓冲区分配成功: %d 字节\n", fullPackedWidth);
-    
-    // 发送显示命令（0x10）- 开始写入图像数据
-    Serial.println("   开始发送图像数据到EPD...");
-    DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x10);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 逐行处理：从Flash读取、转换、直接发送到显示驱动
-    int charIdx = 0;
-    
-    for (int row = 0; row < height; row++) {
-        // 读取一行数据（fullPackedWidth字节，需要2*fullPackedWidth个字符）
-        for (int col = 0; col < fullPackedWidth; col++) {
-            // 读取两个字符组成一个字节
-            if (charIdx >= fileSize || !file.available()) {
-                // 数据不足，用白色填充
-                rowBuffer[col] = 0x11;  // 两个白色像素
-                continue;
-            }
-            
-            char c1 = file.read();
-            charIdx++;
-            
-            if (charIdx >= fileSize || !file.available()) {
-                // 只有一个字符，用白色填充
-                rowBuffer[col] = 0x11;
-                continue;
-            }
-            
-            char c2 = file.read();
-            charIdx++;
-            
-            // 检查是否为有效字符（'a'-'p'）
-            if (c1 < 'a' || c1 > 'p' || c2 < 'a' || c2 > 'p') {
-                // 无效字符，用白色填充
-                rowBuffer[col] = 0x11;
-                continue;
-            }
-            
-            // 将两个字符转换为字节
-            int low = (c1 - 'a') & 0x0F;
-            int high = (c2 - 'a') & 0x0F;
-            
-            // 打包成字节：高4bit是high，低4bit是low
-            rowBuffer[col] = (UBYTE)((high << 4) | low);
-        }
-        
-        // 直接发送一行数据到显示驱动（数据模式）
-        for (int col = 0; col < fullPackedWidth; col++) {
-            DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
-            DEV_Digital_Write(EPD_CS_PIN, 0);
-            DEV_SPI_WriteByte(rowBuffer[col]);
-            DEV_Digital_Write(EPD_CS_PIN, 1);
-        }
-        
-        // 每50行输出一次进度
-        if ((row + 1) % 50 == 0) {
-            Serial.printf("   进度: %d/%d 行 (%.1f%%)\n", row + 1, height, 
-                          (row + 1) * 100.0 / height);
-        }
-    }
-    
-    file.close();
-    free(rowBuffer);
-    
-    Serial.printf("✅ 已读取并发送 %d 字节，准备刷新显示\n", fullPackedWidth * height);
-    
-    // 刷新显示：需要完整的TurnOnDisplay流程
-    Serial.println("   执行完整的显示刷新流程...");
-    
-    // 1. 发送命令0x04（上电）
-    DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x04);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 等待BUSY
-    Serial.println("   等待BUSY（上电）...");
-    while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
-        delay(1);
-    }
-    
-    // 2. 发送命令0x06（设置显示模式）并发送数据
-    DEV_Digital_Write(EPD_DC_PIN, 0);
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x06);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 发送数据：0x6F, 0x1F, 0x17, 0x49
-    DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x6F);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x1F);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x17);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x49);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 3. 发送命令0x12（显示刷新）并发送数据0x00
-    DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x12);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x00);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 等待BUSY（显示刷新）
-    Serial.println("   等待BUSY（显示刷新）...");
-    while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
-        delay(1);
-    }
-    
-    // 4. 发送命令0x02（断电）
-    DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x02);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
-    DEV_Digital_Write(EPD_CS_PIN, 0);
-    DEV_SPI_WriteByte(0x00);
-    DEV_Digital_Write(EPD_CS_PIN, 1);
-    
-    // 等待BUSY（断电）
-    Serial.println("   等待BUSY（断电）...");
-    while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
-        delay(1);
-    }
-    
-    // 清理临时文件
-    if (SPIFFS.exists(DEVICE_CODE_FILE)) {
-        SPIFFS.remove(DEVICE_CODE_FILE);
-        Serial.println("🗑️  设备码临时文件已清除");
-    }
+    // 直接使用 DisplayPart 显示（局部刷新，更快）
+    EPD_7IN3E_DisplayPart(imageBuffer, xstart, ystart, paintWidth, paintHeight);
     
     Serial.println("✅ 设备码已显示在屏幕上");
 }
@@ -849,8 +592,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                         contentLength -= bytesRead;
                     }
                     
-                    // 每32KB输出一次进度
-                    if (totalRead % 32768 == 0) {
+                    // 优化：减少进度日志输出频率（从每32KB改为每64KB）
+                    if (totalRead % 65536 == 0) {
                         Serial.printf("   已下载: %d 字节 (%.2f KB)\n", totalRead, totalRead / 1024.0);
                     }
                 } else {
@@ -866,7 +609,27 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             flashTempFile.close();
             flashTempFileOpen = false;
             
-            Serial.printf("✅ 下载完成: %d 字节 (%.2f KB)\n", flashTempFileSize, flashTempFileSize / 1024.0);
+            // 计算期望的文件大小：800x480 4bit格式 = 192000字节 = 384000字符
+            int expectedSize = (800 / 2) * 480 * 2;  // 400 * 480 * 2 = 384000字符
+            Serial.printf("✅ 下载完成: %d 字符 (%.2f KB)\n", flashTempFileSize, flashTempFileSize / 1024.0);
+            Serial.printf("   期望大小: %d 字符 (%.2f KB)\n", expectedSize, expectedSize / 1024.0);
+            
+            if (flashTempFileSize < expectedSize) {
+                Serial.printf("❌ 警告：下载的数据不完整！缺少 %d 字符 (%.2f KB)\n", 
+                              expectedSize - flashTempFileSize, 
+                              (expectedSize - flashTempFileSize) / 1024.0);
+                Serial.println("   可能原因：");
+                Serial.println("   1. HTTP下载超时或网络中断");
+                Serial.println("   2. 服务器响应不完整");
+                Serial.println("   3. Flash存储空间不足");
+                Serial.println("   显示时底部区域将显示为白色");
+            } else if (flashTempFileSize > expectedSize) {
+                Serial.printf("⚠️  警告：下载的数据超出期望大小！多出 %d 字符\n", 
+                              flashTempFileSize - expectedSize);
+            } else {
+                Serial.println("✅ 数据大小正确，可以正常显示");
+            }
+            
             Serial.println("   数据已保存到Flash，可以使用SHOW命令显示");
         } else {
             Serial.printf("❌ HTTP下载失败: 状态码 %d\n", httpCode);
@@ -889,7 +652,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         
     } else if (cmd == "SHOW") {
         // 显示命令：从Flash读取数据并显示
-        Serial.println("📺 收到显示命令，从Flash读取数据...");
+        // 优化：减少日志输出
+        // Serial.println("📺 收到显示命令，从Flash读取数据...");
         
         // 关闭写入文件
         closeFlashTempFile();
@@ -1165,7 +929,7 @@ void MQTT__loop() {
     
     // 启动后查询云端绑定状态（仅执行一次）
     static bool statusQueried = false;
-    if (!statusQueried && (now - deviceStartupTime >= 2000)) {  // 启动后2秒查询
+    if (!statusQueried && (now - deviceStartupTime >= 1000)) {  // 启动后1秒查询（优化：提前查询）
         statusQueried = true;
         
         Serial.println("\n========================================");
@@ -1202,7 +966,7 @@ void MQTT__loop() {
                     // 可以在这里显示配对码，但当前实现仍显示设备ID
                 }
                 
-                // 延迟显示设备码，给MQTT消息一些时间
+                // 立即显示设备码（优化：不延迟）
                 if (!deviceCodeShown) {
                     deviceCodeShown = true;
                     Serial.println("\n========================================");
@@ -1230,8 +994,8 @@ void MQTT__loop() {
             } else {
                 // 本地未绑定且云端不可达，在合理超时后显示配对码
                 Serial.println("⏳ 等待网络恢复或超时后显示配对码...");
-                // 延迟显示，给网络一些恢复时间
-                if (!deviceCodeShown && (now - deviceStartupTime >= STARTUP_WAIT_MS + 3000)) {
+                // 延迟显示，给网络一些恢复时间（优化：减少等待时间）
+                if (!deviceCodeShown && (now - deviceStartupTime >= STARTUP_WAIT_MS + 1000)) {
                     deviceCodeShown = true;
                     Serial.println("\n========================================");
                     Serial.println("⚠️  云端不可达，显示设备码...");

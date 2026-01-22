@@ -533,6 +533,14 @@ def process_e6_image(
     # 转换为4bit格式
     data_4bit = convert_indices_to_4bit(color_indices)
     
+    # 验证数据大小
+    height, width = color_indices.shape
+    expected_bytes = (width + 1) // 2 * height  # 4bit打包后的字节数
+    actual_bytes = len(data_4bit)
+    
+    if actual_bytes != expected_bytes:
+        print(f'⚠️  警告：4bit数据大小不匹配！期望 {expected_bytes} 字节，实际 {actual_bytes} 字节')
+    
     return {
         'preview_image': preview,
         'color_indices': color_indices,  # numpy数组，需要转换为列表以便JSON序列化

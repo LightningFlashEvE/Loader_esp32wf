@@ -130,8 +130,21 @@ UBYTE DEV_SPI_ReadByte()
 
 void DEV_SPI_Write_nByte(UBYTE *pData, UDOUBLE len)
 {
-    for (int i = 0; i < len; i++)
-        DEV_SPI_WriteByte(pData[i]);
+    // 优化：批量传输时保持CS低，减少切换次数
+    digitalWrite(EPD_CS_PIN, GPIO_PIN_RESET);  // CS低，开始传输
+    
+    for (int i = 0; i < len; i++) {
+        UBYTE data = pData[i];
+        for (int j = 0; j < 8; j++) {
+            if ((data & 0x80) == 0) digitalWrite(EPD_MOSI_PIN, GPIO_PIN_RESET); 
+            else                    digitalWrite(EPD_MOSI_PIN, GPIO_PIN_SET);
+            data <<= 1;
+            digitalWrite(EPD_SCK_PIN, GPIO_PIN_SET);     
+            digitalWrite(EPD_SCK_PIN, GPIO_PIN_RESET);
+        }
+    }
+    
+    digitalWrite(EPD_CS_PIN, GPIO_PIN_SET);  // CS高，结束传输
 }
 
 void DEV_Module_Exit(void)

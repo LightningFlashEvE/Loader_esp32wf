@@ -1265,12 +1265,29 @@ def epd_download(device_id):
         # 下载后立即删除缓存（一次性使用）
         del image_data_cache[device_id]
     
-    print(f'📥 ESP32下载图像数据: {device_id} - size: {len(image_data)} 字符')
+    data_size = len(image_data)
+    data_size_bytes = len(image_data.encode('utf-8'))
+    expected_size = 384000  # 800x480 4bit格式 = 192000字节 = 384000字符
+    
+    print(f'📥 ESP32下载图像数据: {device_id}')
+    print(f'   数据大小: {data_size} 字符 ({data_size_bytes} 字节, {data_size_bytes/1024:.2f} KB)')
+    print(f'   期望大小: {expected_size} 字符 ({expected_size/2} 字节, {expected_size/2/1024:.2f} KB)')
+    
+    if data_size != expected_size:
+        print(f'⚠️  警告：数据大小不匹配！期望 {expected_size} 字符，实际 {data_size} 字符')
+        if data_size < expected_size:
+            print(f'   缺少 {expected_size - data_size} 字符，ESP32底部将显示白色')
+        else:
+            print(f'   多出 {data_size - expected_size} 字符，ESP32将只读取前 {expected_size} 字符')
     
     # 返回纯文本数据（字符串格式：'a'-'p'字符）
+    # 确保Content-Length正确，使用UTF-8编码的字节长度
     return image_data, 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Length': str(len(image_data.encode('utf-8')))
+        'Content-Length': str(data_size_bytes),
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
     }
 
 @app.route('/api/epd/next', methods=['POST'])

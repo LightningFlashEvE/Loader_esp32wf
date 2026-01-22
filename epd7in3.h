@@ -70,13 +70,30 @@ void EPD_load_7in3E_from_buff()
     }
     
     int fileSize = file.size();
-    Serial.printf("📁 Flash文件大小: %d 字节\n", fileSize);
+    Serial.printf("📁 Flash文件大小: %d 字符 (%.2f KB)\n", fileSize, fileSize / 1024.0);
+    
+    // 计算期望的文件大小：800x480 4bit格式 = 192000字节 = 384000字符
+    int expectedChars = (EPD_7IN3E_WIDTH / 2) * EPD_7IN3E_HEIGHT * 2;  // 400 * 480 * 2 = 384000
+    Serial.printf("   期望大小: %d 字符 (%.2f KB)\n", expectedChars, expectedChars / 1024.0);
     
     if (fileSize == 0) {
         Serial.println("❌ Flash文件为空！");
         Serial.println("   可能原因：DOWNLOAD命令未正确执行或数据未写入");
         file.close();
         return;
+    }
+    
+    if (fileSize < expectedChars) {
+        Serial.printf("⚠️  警告：文件大小不完整！期望 %d 字符，实际 %d 字符，缺少 %d 字符\n", 
+                      expectedChars, fileSize, expectedChars - fileSize);
+        Serial.println("   可能原因：HTTP下载不完整或网络中断");
+        Serial.println("   底部区域将显示为白色");
+    } else if (fileSize > expectedChars) {
+        Serial.printf("⚠️  警告：文件大小超出！期望 %d 字符，实际 %d 字符，多出 %d 字符\n", 
+                      expectedChars, fileSize, fileSize - expectedChars);
+        Serial.println("   将只读取前 384000 字符");
+    } else {
+        Serial.println("✅ 文件大小正确");
     }
     
     // 使用行缓冲区（400字节），避免大内存分配
@@ -90,12 +107,13 @@ void EPD_load_7in3E_from_buff()
     
     Serial.printf("✅ 行缓冲区分配成功: %d 字节\n", packedWidth);
     
-    // 在显示前需要初始化EPD（如果还没有初始化）
-    Serial.println("   初始化EPD（如果未初始化）...");
+    // 优化：减少日志输出
+    // Serial.println("   初始化EPD（如果未初始化）...");
     EPD_7IN3E_Init();
     
     // 发送显示命令（0x10）- 开始写入图像数据
-    Serial.println("   开始发送图像数据到EPD...");
+    // 优化：减少日志输出
+    // Serial.println("   开始发送图像数据到EPD...");
     DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
     DEV_Digital_Write(EPD_CS_PIN, 0);
     DEV_SPI_WriteByte(0x10);
@@ -105,6 +123,9 @@ void EPD_load_7in3E_from_buff()
     int charIdx = 0;
     int totalBytesRead = 0;
     
+    int missingDataCount = 0;  // 统计缺失数据的次数
+    int invalidCharCount = 0;  // 统计无效字符的次数
+    
     for (int row = 0; row < EPD_7IN3E_HEIGHT; row++) {
         // 读取一行数据（packedWidth字节，需要2*packedWidth个字符）
         for (int col = 0; col < packedWidth; col++) {
@@ -112,6 +133,7 @@ void EPD_load_7in3E_from_buff()
             if (charIdx >= fileSize || !file.available()) {
                 // 数据不足，用白色填充
                 rowBuffer[col] = 0x11;  // 两个白色像素
+                missingDataCount++;
                 continue;
             }
             
@@ -121,16 +143,19 @@ void EPD_load_7in3E_from_buff()
             if (charIdx >= fileSize || !file.available()) {
                 // 只有一个字符，用白色填充
                 rowBuffer[col] = 0x11;
+                missingDataCount++;
                 continue;
             }
             
             char c2 = file.read();
             charIdx++;
             
-            // 检查是否为有效字符（'a'-'p'）
+            // 优化：简化字符验证（只检查范围，不打印日志，提升速度）
             if (c1 < 'a' || c1 > 'p' || c2 < 'a' || c2 > 'p') {
                 // 无效字符，用白色填充
                 rowBuffer[col] = 0x11;
+                invalidCharCount++;
+                // 优化：只在最后统计时报告，不逐行打印
                 continue;
             }
             
@@ -143,16 +168,12 @@ void EPD_load_7in3E_from_buff()
             totalBytesRead++;
         }
         
-        // 直接发送一行数据到显示驱动（数据模式）
-        for (int col = 0; col < packedWidth; col++) {
-            DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
-            DEV_Digital_Write(EPD_CS_PIN, 0);
-            DEV_SPI_WriteByte(rowBuffer[col]);
-            DEV_Digital_Write(EPD_CS_PIN, 1);
-        }
+        // 优化：使用批量SPI传输函数，大幅提升速度（减少CS切换次数）
+        DEV_Digital_Write(EPD_DC_PIN, 1);  // 数据模式
+        DEV_SPI_Write_nByte(rowBuffer, packedWidth);  // 批量发送整行（400字节）
         
-        // 每50行输出一次进度
-        if ((row + 1) % 50 == 0) {
+        // 优化：减少进度日志输出频率（从每50行改为每100行）
+        if ((row + 1) % 100 == 0) {
             Serial.printf("   进度: %d/%d 行 (%.1f%%)\n", row + 1, EPD_7IN3E_HEIGHT, 
                           (row + 1) * 100.0 / EPD_7IN3E_HEIGHT);
         }
@@ -162,10 +183,17 @@ void EPD_load_7in3E_from_buff()
     free(rowBuffer);
     
     Serial.printf("✅ 已读取并发送 %d 字节，准备刷新显示\n", totalBytesRead);
+    if (missingDataCount > 0) {
+        Serial.printf("⚠️  警告：有 %d 个字节因数据不足被填充为白色\n", missingDataCount);
+    }
+    if (invalidCharCount > 0) {
+        Serial.printf("⚠️  警告：有 %d 个字节因无效字符被填充为白色\n", invalidCharCount);
+    }
     
     // 刷新显示：需要完整的TurnOnDisplay流程
     // 参考EPD_7IN3E_TurnOnDisplay的实现
-    Serial.println("   执行完整的显示刷新流程...");
+    // 优化：减少日志输出
+    // Serial.println("   执行完整的显示刷新流程...");
     
     // 1. 发送命令0x04（上电）
     DEV_Digital_Write(EPD_DC_PIN, 0);  // 命令模式
@@ -173,8 +201,8 @@ void EPD_load_7in3E_from_buff()
     DEV_SPI_WriteByte(0x04);
     DEV_Digital_Write(EPD_CS_PIN, 1);
     
-    // 等待BUSY
-    Serial.println("   等待BUSY（上电）...");
+    // 等待BUSY（优化：减少日志输出）
+    // Serial.println("   等待BUSY（上电）...");
     while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
         delay(1);
     }
@@ -214,8 +242,8 @@ void EPD_load_7in3E_from_buff()
     DEV_SPI_WriteByte(0x00);
     DEV_Digital_Write(EPD_CS_PIN, 1);
     
-    // 等待BUSY（显示刷新）
-    Serial.println("   等待BUSY（显示刷新）...");
+    // 等待BUSY（显示刷新）（优化：减少日志输出）
+    // Serial.println("   等待BUSY（显示刷新）...");
     while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
         delay(1);
     }
@@ -231,8 +259,8 @@ void EPD_load_7in3E_from_buff()
     DEV_SPI_WriteByte(0x00);
     DEV_Digital_Write(EPD_CS_PIN, 1);
     
-    // 等待BUSY（断电）
-    Serial.println("   等待BUSY（断电）...");
+    // 等待BUSY（断电）（优化：减少日志输出）
+    // Serial.println("   等待BUSY（断电）...");
     while (!DEV_Digital_Read(EPD_BUSY_PIN)) {
         delay(1);
     }

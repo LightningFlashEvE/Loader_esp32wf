@@ -1001,29 +1001,15 @@ void reportStatus() {
 bool initFlashStorage() {
     Serial.println("📁 初始化SPIFFS文件系统...");
     
-    // 尝试挂载SPIFFS（先尝试不格式化）
-    if (!SPIFFS.begin(false)) {
-        Serial.println("⚠️  SPIFFS挂载失败，尝试格式化...");
-        
-        // 如果挂载失败，尝试格式化
-        if (!SPIFFS.format()) {
-            Serial.println("❌ SPIFFS格式化失败");
-            Serial.println("   可能原因：分区表未配置SPIFFS分区");
-            Serial.println("   解决方案：");
-            Serial.println("   1. 在Arduino IDE中选择包含SPIFFS的分区方案，或");
-            Serial.println("   2. 使用项目根目录的 partitions.csv 文件");
-            Serial.println("   3. 在Arduino IDE中：工具 -> Partition Scheme -> 选择包含SPIFFS的方案");
-            return false;
-        }
-        
-        Serial.println("✅ SPIFFS格式化完成，重新挂载...");
-        
-        // 格式化后重新挂载
-        if (!SPIFFS.begin(false)) {
-            Serial.println("❌ SPIFFS重新挂载失败");
-            Serial.println("   错误代码可能表示分区不存在");
-            return false;
-        }
+    // 说明：
+    // - 在 ESP32C3 + 自定义 partitions.csv 场景下，第一次启动时分区里是“脏数据”，
+    //   直接挂载会得到 NOT_A_FS 错误（-10025），需要自动格式化一次。
+    // - 因此这里改为 SPIFFS.begin(true)：挂载失败会自动 format 一次，再挂载。
+    //   对已经有有效文件系统的情况没有副作用。
+    if (!SPIFFS.begin(true)) {
+        Serial.println("❌ SPIFFS挂载失败（包含自动格式化），请检查分区表是否包含 spiffs 分区");
+        Serial.println("   建议确认：已选择 Custom 分区方案，并使用项目根目录的 partitions.csv");
+        return false;
     }
     
     Serial.println("✅ SPIFFS初始化成功");

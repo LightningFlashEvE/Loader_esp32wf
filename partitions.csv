@@ -1,9 +1,14 @@
 # Name,   Type, SubType, Offset,  Size, Flags
-# ESP32 4MB Flash Partition Table (No OTA, with SPIFFS)
-# Bootloader: 0x0000 - 0x8000 (32KB)
-# Partition Table: 0x8000 - 0x9000 (4KB)
-# Total Flash: 4MB (0x400000)
-nvs,      data, nvs,     0x9000,  0x5000,
-phy_init, data, phy,     0xe000,  0x2000,
-factory,  app,  factory, 0x10000, 0x140000,
-spiffs,   data, spiffs,  0x150000, 0x2B0000,
+# ESP32/ESP32C3 4MB Flash Partition Table (No OTA, with SPIFFS)
+# Bootloader:    0x0000 - 0x8000  (32KB)
+# Partition Tbl: 0x8000 - 0x9000  (4KB)
+# Total Flash:   4MB (0x400000)
+#
+# 说明：
+# - 原来 factory 分区大小是 0x140000 (1.25MB)，现在固件 ~1.3MB，已经放不下
+# - 这里把 factory 调大到 0x200000 (2MB)，留出足够空间
+# - 剩余空间都给 SPIFFS，用于存图像数据
+nvs,      data, nvs,     0x9000,   0x5000,
+phy_init, data, phy,     0xe000,   0x2000,
+factory,  app,  factory, 0x10000,  0x200000,
+spiffs,   data, spiffs,  0x210000, 0x1F0000,

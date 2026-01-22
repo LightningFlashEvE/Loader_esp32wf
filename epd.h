@@ -26,16 +26,43 @@
 /* SPI pin definition --------------------------------------------------------*/
 //#include "epd7in5_HD.h"
 
-#define PIN_SPI_SCK  13
-#define PIN_SPI_DIN  14
-#define PIN_SPI_CS   15
-#define PIN_SPI_BUSY 25//19
-#define PIN_SPI_RST  26//21
-#define PIN_SPI_DC   27//22
+// 为了兼容合宙 ESP32C3-Core，这里与 DEV_Config.h 一样按芯片区分引脚。
+// 注意：务必与实际硬件接线保持一致。
+#if defined(ARDUINO_ESP32C3_DEV) || defined(CONFIG_IDF_TARGET_ESP32C3)
+    // ===== 合宙 ESP32C3-Core 推荐连接 =====
+    //   SCK  <-> GPIO2
+    //   MOSI <-> GPIO7
+    //   CS   <-> GPIO10
+    //   RST  <-> GPIO4
+    //   DC   <-> GPIO5
+    //   BUSY <-> GPIO6
+    //
+    // 这里保持与 DEV_Config.h 中的 EPD_* 宏一一对应
+    #define PIN_SPI_SCK  2
+    #define PIN_SPI_DIN  7
+    #define PIN_SPI_CS   10
+    #define PIN_SPI_BUSY 6
+    #define PIN_SPI_RST  4
+    #define PIN_SPI_DC   5
 
-#define PIN_SPI_CS_M    15
-#define PIN_SPI_CS_S    2
-#define PIN_SPI_PWR     33
+    // 如果没用到多片级联，这里只保留主 CS，副 CS 可随意放一个未用脚
+    #define PIN_SPI_CS_M    PIN_SPI_CS
+    #define PIN_SPI_CS_S    3     // 备用 CS，可不接
+    // PWR 建议直接接 3V3，如果仍需要由 IO 控制上电，可用一个普通 GPIO
+    #define PIN_SPI_PWR     12    // 可接到电子纸 VCC
+#else
+    // ===== 传统 ESP32 开发板（原项目） =====
+    #define PIN_SPI_SCK  13
+    #define PIN_SPI_DIN  14
+    #define PIN_SPI_CS   15
+    #define PIN_SPI_BUSY 25//19
+    #define PIN_SPI_RST  26//21
+    #define PIN_SPI_DC   27//22
+
+    #define PIN_SPI_CS_M    15
+    #define PIN_SPI_CS_S    2
+    #define PIN_SPI_PWR     33
+#endif
 
 /* Pin level definition ------------------------------------------------------*/
 // 注意：LOW 和 HIGH 已在 ESP32 核心库中定义，这里不再重复定义

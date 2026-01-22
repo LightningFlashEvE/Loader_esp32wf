@@ -1010,9 +1010,21 @@
             <div class="panel-content hidden" id="processPanel">
                 <div class="panel-section">
                     <h4>图像处理</h4>
-                    <p style="font-size: 0.85em; color: var(--text-light); margin-bottom: 15px;">
-                        使用后端6色算法（Floyd-Steinberg抖动）处理图像
-                    </p>
+                    <div style="margin-bottom: 15px;">
+                        <label for="algorithmSelect" style="display: block; margin-bottom: 8px; font-size: 0.9em; color: var(--text-light);">
+                            处理算法：
+                        </label>
+                        <select id="algorithmSelect" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 0.9em; margin-bottom: 10px;">
+                            <option value="floyd_steinberg">Floyd-Steinberg 抖动（适合渐变和细节丰富的图像）</option>
+                            <option value="gradient_blend">梯度边界混合（适合线条和边界明显的图像）</option>
+                        </select>
+                        <div id="gradThreshContainer" style="display: none; margin-bottom: 10px;">
+                            <label for="gradThreshInput" style="display: block; margin-bottom: 5px; font-size: 0.85em; color: var(--text-light);">
+                                梯度阈值（10-100，默认40）：
+                            </label>
+                            <input type="number" id="gradThreshInput" value="40" min="10" max="100" style="width: 100%; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 0.9em;">
+                        </div>
+                    </div>
                     <button class="btn btn-primary" onclick="processImage()" style="width: 100%; margin-bottom: 15px;">
                         🔄 处理并预览
                     </button>

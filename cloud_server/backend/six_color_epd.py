@@ -4,21 +4,24 @@
 7.3寸E6六色墨水屏（黑/白/红/绿/蓝/黄）处理算法模块
 
 主要功能：
-- 使用Floyd-Steinberg抖动算法将RGB图像映射到6色调色板
+- 支持多种图像处理算法：
+  1. Floyd-Steinberg抖动算法：误差扩散，适合渐变和细节丰富的图像
+  2. 梯度边界混合算法：基于Sobel梯度检测边界，在边界区域进行颜色混合，减少量化伪影
 - 转换为4bit格式（每字节两个像素）
 - 生成预览图像
 
-依赖：Pillow, numpy
+依赖：Pillow, numpy, opencv-python
 """
 
 from __future__ import annotations
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Literal
 import io
 import base64
 
 import numpy as np
 from PIL import Image
+import cv2
 
 
 # ==================== E6 六色调色板 ====================
@@ -62,6 +65,28 @@ def build_pil_palette() -> list:
     palette = palette[:768]
     return palette
 
+
+# ==================== E6 调色板数组（用于梯度边界混合算法）====================
+# 注意：顺序必须与驱动索引对应：0=黑, 1=白, 2=黄, 3=红, 5=蓝, 6=绿
+E6_PALETTE_ARRAY = np.array([
+    [0,   0,   0  ],  # 0x0: 黑色
+    [255, 255, 255],  # 0x1: 白色
+    [255, 255, 0  ],  # 0x2: 黄色
+    [255, 0,   0  ],  # 0x3: 红色
+    [0,   0,   0  ],  # 0x4: 未使用（占位）
+    [0,   0,   255],  # 0x5: 蓝色
+    [0,   255, 0  ],  # 0x6: 绿色
+], dtype=np.uint8)
+
+# 驱动索引映射（用于从调色板索引转换为驱动索引）
+PALETTE_IDX_TO_DRIVER_IDX = {
+    0: 0x0,  # 黑
+    1: 0x1,  # 白
+    2: 0x2,  # 黄
+    3: 0x3,  # 红
+    4: 0x5,  # 蓝（跳过0x4）
+    5: 0x6,  # 绿
+}
 
 # ==================== Floyd-Steinberg 抖动处理 ====================
 
@@ -144,6 +169,153 @@ def convert_to_e6_with_dither(img: Image.Image, target_size: Optional[Tuple[int,
     return paletted, mapped_indices
 
 
+# ==================== 梯度边界混合算法 ====================
+
+def compute_gradient_mask(img_gray: np.ndarray, grad_thresh: int = 40) -> np.ndarray:
+    """
+    计算梯度掩码，用于识别边界区域
+    
+    参数：
+        img_gray: 灰度图像 (numpy数组, uint8)
+        grad_thresh: 梯度阈值，默认40
+    
+    返回：
+        二值掩码，边界区域为255，其他为0
+    """
+    # Sobel 梯度
+    grad_x = cv2.Sobel(img_gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(img_gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = cv2.magnitude(grad_x, grad_y)
+    grad_norm = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    # 阈值化
+    _, edge_mask = cv2.threshold(grad_norm, grad_thresh, 255, cv2.THRESH_BINARY)
+    # 膨胀扩大边界区域
+    kernel = np.ones((5, 5), np.uint8)
+    edge_expand = cv2.dilate(edge_mask, kernel, iterations=1)
+    
+    return edge_expand
+
+
+def blend_boundary(img: np.ndarray, edge_mask: np.ndarray) -> np.ndarray:
+    """
+    在边界区域进行颜色混合，减少量化伪影
+    
+    参数：
+        img: RGB图像 (numpy数组, uint8, HxWx3)
+        edge_mask: 边界掩码 (numpy数组, uint8, HxW)
+    
+    返回：
+        混合后的RGB图像
+    """
+    h, w = img.shape[:2]
+    blended = img.copy().astype(np.float32)
+    
+    # 归一化梯度权重
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    weights = cv2.normalize(cv2.magnitude(grad_x, grad_y), None, 0, 1, cv2.NORM_MINMAX)
+    
+    for y in range(h):
+        for x in range(w):
+            if edge_mask[y, x] > 0:
+                wgt = weights[y, x]
+                # 四邻域平均颜色
+                y0, y1 = max(y - 1, 0), min(y + 1, h - 1)
+                x0, x1 = max(x - 1, 0), min(x + 1, w - 1)
+                neighbors = img[y0:y1+1, x0:x1+1].astype(np.float32)
+                avg_color = neighbors.mean(axis=(0, 1))
+                blended[y, x] = blended[y, x] * (1 - wgt) + avg_color * wgt
+    
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def quantize_to_palette(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    将RGB图像量化到E6调色板，使用最近邻匹配（向量化实现）
+    
+    参数：
+        img: RGB图像 (numpy数组, uint8, HxWx3)
+    
+    返回：
+        (quantized_img, color_indices)
+        - quantized_img: 量化后的RGB图像
+        - color_indices: 驱动索引数组 (HxW)，值为0x0, 0x1, 0x2, 0x3, 0x5, 0x6
+    """
+    h, w = img.shape[:2]
+    
+    # 展平图像为 (H*W, 3)
+    img_flat = img.reshape(-1, 3).astype(np.float32)
+    num_pixels = img_flat.shape[0]
+    
+    # 有效的调色板索引（跳过索引4）
+    valid_palette_indices = np.array([0, 1, 2, 3, 5, 6], dtype=np.uint8)
+    palette_float = E6_PALETTE_ARRAY[valid_palette_indices].astype(np.float32)  # (6, 3)
+    
+    # 计算每个像素到所有调色板颜色的距离
+    # img_flat: (H*W, 3), palette_float: (6, 3)
+    # 使用广播计算所有距离: (H*W, 6)
+    distances = np.sqrt(np.sum((img_flat[:, np.newaxis, :] - palette_float[np.newaxis, :, :]) ** 2, axis=2))
+    
+    # 找到最近的颜色索引（在valid_palette_indices中的位置）
+    closest_idx_in_valid = np.argmin(distances, axis=1)  # (H*W,)
+    
+    # 映射回驱动索引
+    color_indices_flat = valid_palette_indices[closest_idx_in_valid]
+    color_indices = color_indices_flat.reshape(h, w)
+    
+    # 生成量化后的图像
+    quantized_flat = E6_PALETTE_ARRAY[color_indices_flat]
+    quantized = quantized_flat.reshape(h, w, 3)
+    
+    return quantized, color_indices
+
+
+def convert_to_e6_with_gradient_blend(
+    img: Image.Image,
+    target_size: Optional[Tuple[int, int]] = None,
+    grad_thresh: int = 40
+) -> Tuple[Image.Image, np.ndarray]:
+    """
+    将RGB图像转换为E6六色格式，使用梯度边界混合算法
+    
+    参数：
+        img: PIL.Image，任意模式，内部会转为RGB
+        target_size: (width, height)，如果提供则先缩放到指定分辨率
+        grad_thresh: 梯度阈值，默认40
+    
+    返回：
+        (quantized_image, color_indices)
+        - quantized_image: PIL.Image (RGB模式，量化后的图像)
+        - color_indices: numpy数组 [H, W]，值为驱动索引（0x0, 0x1, 0x2, 0x3, 0x5, 0x6）
+    """
+    # 转换为RGB并调整尺寸
+    rgb_img = img.convert("RGB")
+    if target_size is not None:
+        rgb_img = rgb_img.resize(target_size, Image.LANCZOS)
+    
+    # PIL Image 转 numpy array (RGB格式)
+    img_array = np.array(rgb_img)
+    
+    # 转换为灰度图用于梯度计算
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    
+    # 计算梯度掩码
+    edge_mask = compute_gradient_mask(gray, grad_thresh)
+    
+    # 边界混合
+    blended = blend_boundary(img_array, edge_mask)
+    
+    # 量化到调色板
+    quantized, color_indices = quantize_to_palette(blended)
+    
+    # 转回PIL Image
+    quantized_img = Image.fromarray(quantized, mode="RGB")
+    
+    return quantized_img, color_indices
+
+
 def convert_indices_to_4bit(color_indices: np.ndarray) -> bytes:
     """
     将颜色索引数组转换为4bit格式（每字节两个像素）
@@ -201,7 +373,9 @@ def build_preview_image(color_indices: np.ndarray) -> Image.Image:
 
 def process_e6_image(
     img: Image.Image,
-    target_size: Optional[Tuple[int, int]] = None
+    target_size: Optional[Tuple[int, int]] = None,
+    algorithm: Literal['floyd_steinberg', 'gradient_blend'] = 'floyd_steinberg',
+    grad_thresh: int = 40
 ) -> dict:
     """
     完整的E6图像处理流程
@@ -209,6 +383,8 @@ def process_e6_image(
     参数：
         img: PIL.Image
         target_size: (width, height)，默认(800, 480)
+        algorithm: 处理算法，'floyd_steinberg' 或 'gradient_blend'
+        grad_thresh: 梯度阈值（仅用于 gradient_blend 算法），默认40
     
     返回：
         {
@@ -222,8 +398,16 @@ def process_e6_image(
     if target_size is None:
         target_size = (800, 480)
     
-    # 转换为E6格式
-    paletted, color_indices = convert_to_e6_with_dither(img, target_size)
+    # 根据算法选择处理方式
+    if algorithm == 'floyd_steinberg':
+        paletted, color_indices = convert_to_e6_with_dither(img, target_size)
+    elif algorithm == 'gradient_blend':
+        quantized_img, color_indices = convert_to_e6_with_gradient_blend(
+            img, target_size, grad_thresh
+        )
+        paletted = quantized_img
+    else:
+        raise ValueError(f"未知的算法: {algorithm}")
     
     # 生成预览
     preview = build_preview_image(color_indices)
@@ -242,7 +426,13 @@ def process_e6_image(
 
 # ==================== Flask API 辅助函数 ====================
 
-def process_e6_image_from_base64(base64_data: str, width: int = 800, height: int = 480) -> dict:
+def process_e6_image_from_base64(
+    base64_data: str,
+    width: int = 800,
+    height: int = 480,
+    algorithm: Literal['floyd_steinberg', 'gradient_blend'] = 'floyd_steinberg',
+    grad_thresh: int = 40
+) -> dict:
     """
     从base64字符串处理图像
     
@@ -250,6 +440,8 @@ def process_e6_image_from_base64(base64_data: str, width: int = 800, height: int
         base64_data: base64编码的图片数据（不含data:image前缀）
         width: 目标宽度
         height: 目标高度
+        algorithm: 处理算法，'floyd_steinberg' 或 'gradient_blend'
+        grad_thresh: 梯度阈值（仅用于 gradient_blend 算法），默认40
     
     返回：
         包含预览图base64、4bit数据base64等的字典
@@ -259,7 +451,12 @@ def process_e6_image_from_base64(base64_data: str, width: int = 800, height: int
     img = Image.open(io.BytesIO(img_bytes))
     
     # 处理图像
-    result = process_e6_image(img, target_size=(width, height))
+    result = process_e6_image(
+        img,
+        target_size=(width, height),
+        algorithm=algorithm,
+        grad_thresh=grad_thresh
+    )
     
     # 将预览图转换为base64
     preview_buffer = io.BytesIO()
@@ -278,5 +475,6 @@ def process_e6_image_from_base64(base64_data: str, width: int = 800, height: int
         'data4bit': data_4bit_base64,
         'width': result['width'],
         'height': result['height'],
-        'colorIndices': color_indices_flat  # 一维列表，便于前端使用
+        'colorIndices': color_indices_flat,  # 一维列表，便于前端使用
+        'algorithm': algorithm  # 返回使用的算法
     }

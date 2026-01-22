@@ -47,6 +47,29 @@ if (typeof window.editorInitialized === 'undefined') {
     });
 }
 
+// 初始化算法选择功能
+document.addEventListener('DOMContentLoaded', () => {
+    const algorithmSelect = document.getElementById('algorithmSelect');
+    const gradThreshContainer = document.getElementById('gradThreshContainer');
+    
+    if (algorithmSelect && gradThreshContainer) {
+        // 根据选择的算法显示/隐藏梯度阈值输入框
+        function updateGradThreshVisibility() {
+            if (algorithmSelect.value === 'gradient_blend') {
+                gradThreshContainer.style.display = 'block';
+            } else {
+                gradThreshContainer.style.display = 'none';
+            }
+        }
+        
+        // 初始状态
+        updateGradThreshVisibility();
+        
+        // 监听算法选择变化
+        algorithmSelect.addEventListener('change', updateGradThreshVisibility);
+    }
+});
+
 // 从URL参数加载设备ID (旧版兼容)
 async function loadDeviceFromURL() {
     const params = new URLSearchParams(window.location.search);
@@ -385,6 +408,21 @@ function authHeaders() {
 }
 
 // 处理图片 - 简化版：只调用后端API
+// 获取算法参数
+function getAlgorithmParams() {
+    const algorithmSelect = document.getElementById('algorithmSelect');
+    const algorithm = algorithmSelect ? algorithmSelect.value : 'floyd_steinberg';
+    const gradThreshInput = document.getElementById('gradThreshInput');
+    const gradThresh = (algorithm === 'gradient_blend' && gradThreshInput) ? parseInt(gradThreshInput.value) || 40 : 40;
+    return { algorithm, gradThresh };
+}
+
+// 算法名称映射
+const algorithmNames = {
+    'floyd_steinberg': 'Floyd-Steinberg抖动',
+    'gradient_blend': '梯度边界混合'
+};
+
 function processImage() {
     // 新版界面：检查当前模式
     if (typeof currentMode !== 'undefined' && currentMode !== 'image') {
@@ -461,7 +499,10 @@ function processImage() {
     const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
-    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    // 获取算法参数
+    const { algorithm, gradThresh } = getAlgorithmParams();
+    const algorithmName = algorithmNames[algorithm] || algorithm;
+    log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 显示进度条
     showProgress('正在处理图像...');
@@ -477,7 +518,9 @@ function processImage() {
         body: JSON.stringify({
             imageData: base64Data,
             width: width,
-            height: height
+            height: height,
+            algorithm: algorithm,
+            gradThresh: gradThresh
         })
     })
     .then(response => {
@@ -505,7 +548,7 @@ function processImage() {
                     hideProgress();
                 }, 500);
                 
-                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+                log(`6色处理完成：已使用${algorithmName}映射到6色调色板`, 'success');
             };
             previewImg.onerror = () => {
                 hideProgress();
@@ -1144,7 +1187,10 @@ function processTemplateImage() {
     const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
-    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    // 获取算法参数
+    const { algorithm, gradThresh } = getAlgorithmParams();
+    const algorithmName = algorithmNames[algorithm] || algorithm;
+    log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 调用后端 API
     fetch(`${API_BASE}/api/epd/process-sixcolor`, {
@@ -1156,7 +1202,9 @@ function processTemplateImage() {
         body: JSON.stringify({
             imageData: base64Data,
             width: width,
-            height: height
+            height: height,
+            algorithm: algorithm,
+            gradThresh: gradThresh
         })
     })
     .then(response => response.json())
@@ -1174,7 +1222,8 @@ function processTemplateImage() {
                 // 保存4bit数据（base64编码）
                 window.e6Data4bit = result.data4bit;
                 
-                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+                const algorithmName = algorithmNames[algorithm] || algorithm;
+                log(`6色处理完成：已使用${algorithmName}映射到6色调色板`, 'success');
             };
             previewImg.src = 'data:image/png;base64,' + result.previewImage;
         } else {
@@ -1227,7 +1276,10 @@ function processTextImage() {
     const imageDataUrl = processedCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
-    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    // 获取算法参数
+    const { algorithm, gradThresh } = getAlgorithmParams();
+    const algorithmName = algorithmNames[algorithm] || algorithm;
+    log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 调用后端 API
     fetch(`${API_BASE}/api/epd/process-sixcolor`, {
@@ -1239,7 +1291,9 @@ function processTextImage() {
         body: JSON.stringify({
             imageData: base64Data,
             width: width,
-            height: height
+            height: height,
+            algorithm: algorithm,
+            gradThresh: gradThresh
         })
     })
     .then(response => response.json())
@@ -1257,7 +1311,8 @@ function processTextImage() {
                 // 保存4bit数据（base64编码）
                 window.e6Data4bit = result.data4bit;
                 
-                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+                const algorithmName = algorithmNames[algorithm] || algorithm;
+                log(`6色处理完成：已使用${algorithmName}映射到6色调色板`, 'success');
             };
             previewImg.src = 'data:image/png;base64,' + result.previewImage;
         } else {
@@ -1661,7 +1716,10 @@ function processMixedImage() {
     const imageDataUrl = tempCanvas.toDataURL('image/png');
     const base64Data = imageDataUrl.split(',')[1];
     
-    log('正在调用后端6色算法处理（Floyd-Steinberg抖动）...');
+    // 获取算法参数
+    const { algorithm, gradThresh } = getAlgorithmParams();
+    const algorithmName = algorithmNames[algorithm] || algorithm;
+    log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 显示进度条
     showProgress('正在处理图像...');
@@ -1677,7 +1735,9 @@ function processMixedImage() {
         body: JSON.stringify({
             imageData: base64Data,
             width: width,
-            height: height
+            height: height,
+            algorithm: algorithm,
+            gradThresh: gradThresh
         })
     })
     .then(response => {
@@ -1705,7 +1765,8 @@ function processMixedImage() {
                     hideProgress();
                 }, 500);
                 
-                log(`6色处理完成：已使用Floyd-Steinberg抖动映射到6色调色板`, 'success');
+                const algorithmName = algorithmNames[algorithm] || algorithm;
+                log(`6色处理完成：已使用${algorithmName}映射到6色调色板`, 'success');
             };
             previewImg.onerror = () => {
                 hideProgress();

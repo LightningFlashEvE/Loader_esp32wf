@@ -1,40 +1,92 @@
-# ESP32 墨水屏云端控制系统
+# ESP32-C3 墨水屏云端控制系统
 
-通过云服务器和MQTT协议远程控制ESP32墨水屏显示图片。
+通过云服务器和MQTT协议远程控制ESP32-C3墨水屏显示图片。
 
 ## 系统架构
 
 ```
-用户浏览器 <--> 云服务器 (Web + MQTT) <--> ESP32 (MQTT客户端) <--> 墨水屏
+用户浏览器 <--> 云服务器 (Web + MQTT) <--> ESP32-C3 (MQTT客户端) <--> 墨水屏
 ```
 
 ### 工作流程
 
 1. 用户通过浏览器访问云服务器的Web界面
 2. 上传图片并进行处理（缩放、抖动、格式转换）
-3. 云服务器通过MQTT将处理后的数据发送给ESP32
-4. ESP32接收MQTT消息并驱动墨水屏显示
+3. 云服务器通过MQTT将处理后的数据发送给ESP32-C3
+4. ESP32-C3接收MQTT消息并驱动墨水屏显示
+
+## 硬件要求
+
+### ESP32-C3 开发板
+- **推荐**：合宙 ESP32C3-CORE（4MB Flash）
+- **Flash容量**：4MB（用于固件和SPIFFS存储）
+- **WiFi**：2.4GHz 802.11 b/g/n
+
+### 墨水屏
+- **型号**：7.3寸 E6 彩色电子纸（800x480分辨率）
+- **颜色**：7色（黑、白、黄、红、蓝、绿、橙）
+
+## 引脚连接
+
+### 墨水屏连接（ESP32-C3）
+
+| 功能 | GPIO | 说明 |
+|------|------|------|
+| **SCK** | **GPIO2** | SPI时钟 |
+| **MOSI/DIN** | **GPIO3** | SPI数据输出 |
+| **CS** | **GPIO4** | SPI片选（低电平有效） |
+| **RST** | **GPIO6** | 复位信号（低电平复位） |
+| **DC** | **GPIO7** | 数据/命令选择（高=数据，低=命令） |
+| **BUSY** | **GPIO8** | 忙信号（输入，低电平=忙碌） |
+
+### 系统初始化引脚
+
+| 功能 | GPIO | 说明 | 初始状态 |
+|------|------|------|----------|
+| **GPIO12** | **GPIO12** | 用户自定义 | **低电平** |
+| **GPIO13** | **GPIO13** | 用户自定义 | **低电平** |
+
+**注意**：这两个引脚在系统初始化时自动设置为输出模式并输出低电平。
+
+### 系统保留引脚（ESP32-C3-CORE）
+
+| 功能 | GPIO | 说明 | 备注 |
+|------|------|------|------|
+| **UART0_TX** | GPIO21 | 串口发送（下载/调试） | 系统使用 |
+| **UART0_RX** | GPIO20 | 串口接收（下载/调试） | 系统使用 |
+| **Flash SPI** | GPIO14-17 | 系统Flash（4MB） | 系统使用，不可占用 |
 
 ## 目录结构
 
 ```
 .
-├── cloud_server/           # 云端服务器
-│   ├── server.js          # Node.js后端服务
-│   ├── package.json       # 依赖配置
-│   ├── .env.example       # 环境变量示例
-│   └── public/            # Web前端
-│       ├── index.html     # 主页面
-│       └── app.js         # 前端逻辑
+├── cloud_server/              # 云端服务器（Python Flask + Nginx）
+│   ├── backend/              # Flask后端API
+│   │   ├── app.py            # 主应用
+│   │   ├── config.py         # 配置管理
+│   │   ├── tri_color_epd.py  # 三色处理
+│   │   ├── six_color_epd.py  # 六色处理
+│   │   └── requirements.txt  # Python依赖
+│   ├── frontend/             # Web前端
+│   │   ├── index.html        # 主页面
+│   │   ├── control.html      # 设备控制页
+│   │   ├── app.js            # 前端逻辑
+│   │   └── nginx.conf        # Nginx配置
+│   └── docker-compose.yml    # Docker部署配置
 │
-├── esp32_mqtt_epd/        # ESP32代码
-│   ├── esp32_mqtt_epd.ino # 主程序
-│   └── mqtt_epd_handler.h # MQTT命令处理
-│
-└── 原有的EPD驱动文件
-    ├── epd.h              # 墨水屏驱动
-    ├── buff.h             # 数据缓冲
-    └── epd*.h             # 各型号墨水屏驱动
+├── Loader_esp32wf.ino         # ESP32主程序
+├── mqtt_config.h              # MQTT配置和处理
+├── wifi_config.h              # WiFi配网功能
+├── DEV_Config.h/cpp           # 硬件配置（引脚定义）
+├── epd.h                      # 墨水屏驱动接口
+├── epd7in3.h                  # 7.3寸E6驱动适配层
+├── EPD_7in3e.h/cpp            # 官方Demo驱动
+├── GUI_Paint.h/cpp            # GUI绘制库
+├── fonts.h                    # 字库头文件
+├── font24.cpp                 # 24像素字体数据
+├── font12.cpp                 # 12像素字体数据
+├── partitions.csv             # Flash分区表
+└── README.md                  # 本文件
 ```
 
 ## 部署步骤
@@ -44,50 +96,45 @@
 #### 要求
 - Linux服务器 (Ubuntu 20.04+ 推荐)
 - 公网IP或域名
-- Node.js 16+
-- MQTT Broker (Mosquitto 或 EMQX)
+- Python 3.8+
+- MongoDB（用于设备管理）
+- **EMQX MQTT Broker**（推荐使用EMQX）
 
-#### 安装MQTT Broker (Mosquitto)
+#### 安装EMQX MQTT Broker
+
+```bash
+# 下载并安装EMQX
+wget https://www.emqx.com/en/downloads/broker/5.0.0/emqx-5.0.0-ubuntu20.04-amd64.deb
+sudo apt install ./emqx-5.0.0-ubuntu20.04-amd64.deb
+
+# 启动服务
+sudo systemctl start emqx
+sudo systemctl enable emqx
+
+# 访问Web管理界面
+# http://你的服务器IP:18083
+# 默认用户名: admin
+# 默认密码: public（首次登录会要求修改）
+```
+
+#### 配置EMQX授权规则
+
+在EMQX Web管理界面中：
+1. 进入 **访问控制** -> **授权** -> **内置数据库**
+2. 创建规则：允许所有主题（测试用）
+   - 权限：允许
+   - 操作：全部
+   - 主题：`#`
+
+#### 安装MongoDB
 
 ```bash
 # Ubuntu/Debian
-sudo apt update
-sudo apt install mosquitto mosquitto-clients
+sudo apt install mongodb
 
 # 启动服务
-sudo systemctl start mosquitto
-sudo systemctl enable mosquitto
-
-# 配置认证（可选）
-sudo mosquitto_passwd -c /etc/mosquitto/passwd admin
-# 输入密码: admin
-
-# 编辑配置文件
-sudo nano /etc/mosquitto/mosquitto.conf
-```
-
-添加以下配置：
-```
-listener 1883
-allow_anonymous false
-password_file /etc/mosquitto/passwd
-```
-
-重启服务：
-```bash
-sudo systemctl restart mosquitto
-```
-
-#### 安装Node.js
-
-```bash
-# 使用NodeSource仓库
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# 验证安装
-node --version
-npm --version
+sudo systemctl start mongodb
+sudo systemctl enable mongodb
 ```
 
 ### 2. 部署云端服务
@@ -98,147 +145,146 @@ cd /opt
 sudo git clone <your-repo> esp32-cloud
 cd esp32-cloud/cloud_server
 
-# 2. 安装依赖
-npm install
+# 2. 使用Docker部署（推荐）
+docker-compose up -d
+
+# 或手动部署：
+cd backend
+pip3 install -r requirements.txt
 
 # 3. 配置环境变量
-cp .env.example .env
-nano .env
-```
+# 编辑 docker-compose.yml 或设置环境变量：
+export MQTT_BROKER=8.135.238.216
+export MQTT_PORT=1883
+export MQTT_USER=admin
+export MQTT_PASS=admin
+export MONGODB_URI=mongodb://localhost:27017/esp32_epd
 
-编辑 `.env` 文件：
-```env
-PORT=3000
-MQTT_BROKER=mqtt://localhost:1883
-MQTT_USER=admin
-MQTT_PASS=admin
-```
+# 4. 初始化数据库索引
+python3 create_indexes.py
 
-```bash
-# 4. 测试运行
-npm start
-
-# 5. 使用PM2管理进程（生产环境）
-sudo npm install -g pm2
-pm2 start server.js --name esp32-cloud
-pm2 save
-pm2 startup
+# 5. 启动服务
+python3 app.py
 ```
 
 ### 3. 配置防火墙
 
 ```bash
 # 开放端口
-sudo ufw allow 3000/tcp   # Web服务
-sudo ufw allow 1883/tcp   # MQTT
+sudo ufw allow 80/tcp      # Web服务（Nginx）
+sudo ufw allow 5000/tcp    # Flask后端（如果直接访问）
+sudo ufw allow 1883/tcp    # MQTT
+sudo ufw allow 18083/tcp   # EMQX管理界面
 sudo ufw enable
 ```
 
-### 4. 配置Nginx反向代理（可选）
-
-```bash
-sudo apt install nginx
-
-# 创建配置文件
-sudo nano /etc/nginx/sites-available/esp32-cloud
-```
-
-内容：
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;  # 改为你的域名或IP
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-启用配置：
-```bash
-sudo ln -s /etc/nginx/sites-available/esp32-cloud /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-### 5. 烧录ESP32程序
+### 4. 烧录ESP32-C3程序
 
 #### Arduino IDE配置
 
-1. 安装依赖库：
+1. **安装ESP32开发板支持**：
+   - 文件 -> 首选项 -> 附加开发板管理器网址：
+     ```
+     https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+     ```
+   - 工具 -> 开发板 -> 开发板管理器 -> 搜索 "esp32" -> 安装
+
+2. **选择开发板**：
+   - 工具 -> 开发板 -> ESP32 Arduino -> **ESP32C3 Dev Module**
+   - 工具 -> Partition Scheme -> **Custom Partition Table**
+   - 工具 -> Flash Size -> **4MB (32Mb)**
+   - 工具 -> Flash Frequency -> **80MHz**
+   - 工具 -> Flash Mode -> **DIO**
+   - 工具 -> Upload Speed -> **921600**
+
+3. **安装依赖库**：
    - PubSubClient (by Nick O'Leary)
    - ArduinoJson (by Benoit Blanchon)
 
-2. 修改配置：
+4. **修改配置**：
 
-打开 `esp32_mqtt_epd/esp32_mqtt_epd.ino`，修改：
+打开 `mqtt_config.h`，修改：
 
 ```cpp
-// WiFi配置
-const char* WIFI_SSID     = "你的WiFi名称";
-const char* WIFI_PASSWORD = "你的WiFi密码";
-
 // MQTT配置
-const char* MQTT_HOST = "你的服务器IP";  // 例如: "8.135.238.216"
-const uint16_t MQTT_PORT = 1883;
-const char* MQTT_USER = "admin";
-const char* MQTT_PASS = "admin";
+#define MQTT_HOST "8.135.238.216"  // 改成你的云服务器IP
+#define MQTT_PORT 1883
+#define MQTT_USER "admin"
+#define MQTT_PASS "admin"
 ```
 
-3. 整合原有代码：
+5. **分区表配置**：
 
-将原项目中的以下文件复制到 `esp32_mqtt_epd/` 文件夹：
+项目根目录的 `partitions.csv` 已配置好：
 ```
-epd.h
-buff.h
-epd*.h (所有墨水屏驱动文件)
+nvs,      data, nvs,     0x9000,  0x5000,
+phy_init, data, phy,     0xe000,  0x2000,
+factory,  app,  factory, 0x10000, 0x150000,
+spiffs,   data, spiffs,  0x250000, 0x1B0000,
 ```
 
-4. 编译上传：
-   - 选择开发板：ESP32 Dev Module
-   - 选择端口
+**注意**：确保 Arduino IDE 中选择了 **Custom Partition Table**，这样会自动使用项目根目录的 `partitions.csv`。
+
+6. **编译上传**：
+   - 工具 -> Erase Flash -> **All Flash Contents**（首次烧录建议完全擦除）
    - 点击上传
+
+### 5. WiFi配网
+
+设备支持两种WiFi连接方式：
+
+#### 方式1：AP配网模式（首次使用）
+
+1. 设备启动后，如果未配置WiFi，会自动进入AP模式
+2. 设备会创建一个WiFi热点：`EPD-XXXXXX`（XXXXXX为设备码）
+3. 用手机/电脑连接此热点（无密码）
+4. 访问 `http://192.168.4.1`
+5. 输入WiFi名称和密码，点击连接
+6. 设备会自动重启并连接WiFi
+
+#### 方式2：代码配置（开发测试）
+
+在 `wifi_config.h` 中可以设置默认WiFi（仅用于开发测试）。
 
 ### 6. 测试系统
 
 1. **查看ESP32串口输出**：
 ```
 ========================================
-  ESP32 E-Paper MQTT Client
+  WiFi配网初始化
 ========================================
-✅ SPI已初始化
-连接WiFi...
 ✅ WiFi已连接
-IP地址: 192.168.1.100
-设备ID: C3-7CDFA1B2C3D4
-正在连接MQTT...
+IP地址: 192.168.10.143
+========================================
+  MQTT云端控制模式
+========================================
+完整MAC地址: 3C:8A:1F:B6:DA:20
+设备码模式: 后6位
+⭐ 设备码: B6DA20
+MQTT服务器: 8.135.238.216:1883
+========================================
 ✅ MQTT已连接
-订阅主题: dev/C3-7CDFA1B2C3D4/down/#
-========================================
-✅ 系统就绪，等待命令...
-========================================
+订阅主题: dev/B6DA20/down/epd
+✅ 系统就绪，等待云端命令...
 ```
 
 2. **访问Web界面**：
-   - 打开浏览器访问：`http://你的服务器IP:3000`
-   - 或使用域名：`http://your-domain.com`
+   - 打开浏览器访问：`http://你的服务器IP` 或 `http://your-domain.com`
+   - 首次访问需要注册/登录
 
-3. **上传图片**：
-   - 在设备ID框输入ESP32显示的设备ID（例如：`C3-7CDFA1B2C3D4`）
-   - 选择墨水屏型号
+3. **添加设备**：
+   - 登录后进入设备管理页面
+   - 点击"添加设备"
+   - 输入ESP32显示的设备码（例如：`B6DA20`）
+   - 设备会自动绑定
+
+4. **上传图片**：
+   - 在设备控制页面选择已添加的设备
+   - 选择墨水屏型号：**7.3寸 E6**
    - 拖拽或选择图片
    - 点击"处理图片"
    - 点击"上传到设备"
-
-4. **观察效果**：
-   - ESP32串口会显示接收到的命令
-   - 墨水屏应该显示上传的图片
+   - 墨水屏会显示处理后的图片
 
 ## MQTT主题说明
 
@@ -251,8 +297,11 @@ IP地址: 192.168.1.100
 // 初始化EPD
 {"cmd": "EPD", "type": 0, "timestamp": 1234567890}
 
-// 加载数据
+// 加载数据（小图片直接传输）
 {"cmd": "LOAD", "data": [0,255,128,...], "length": 1000, "timestamp": 1234567890}
+
+// 下载命令（大图片通过HTTP下载）
+{"cmd": "DOWNLOAD", "url": "http://...", "timestamp": 1234567890}
 
 // 切换通道
 {"cmd": "NEXT", "timestamp": 1234567890}
@@ -268,73 +317,110 @@ IP地址: 192.168.1.100
 格式：
 ```json
 {
-  "deviceId": "C3-7CDFA1B2C3D4",
+  "deviceId": "B6DA20",
   "rssi": -45,
-  "ip": "192.168.1.100",
+  "ip": "192.168.10.143",
   "uptime_ms": 12345678,
   "freeHeap": 200000
 }
 ```
 
+## Flash存储说明
+
+### 分区表配置
+
+项目使用自定义分区表（`partitions.csv`）：
+
+| 分区 | 类型 | 偏移 | 大小 | 说明 |
+|------|------|------|------|------|
+| nvs | DATA | 0x9000 | 20KB | NVS存储（WiFi配置、设备绑定状态） |
+| phy_init | DATA | 0xE000 | 8KB | PHY初始化数据 |
+| factory | APP | 0x10000 | 1344KB | 应用程序 |
+| spiffs | DATA | 0x250000 | 1728KB | SPIFFS文件系统（图片缓存） |
+
+### SPIFFS使用
+
+- **用途**：存储临时图片数据（避免内存不足）
+- **自动格式化**：首次使用时自动格式化
+- **文件路径**：`/temp_image.bin`
+
+## 设备码说明
+
+设备码基于MAC地址生成，支持三种模式（在 `mqtt_config.h` 中配置）：
+
+- **模式0**：完整12位（例如：`3C8A1FB6DA20`）
+- **模式1**：前6位（例如：`3C8A1F`）
+- **模式2**：后6位（例如：`B6DA20`）**（默认）**
+
 ## 故障排查
 
 ### ESP32无法连接WiFi
-- 检查SSID和密码是否正确
-- 确认WiFi信号强度
+
+- 检查WiFi SSID和密码是否正确
+- 确认WiFi信号强度（2.4GHz）
 - 查看串口输出的错误信息
+- 尝试使用AP配网模式重新配置
 
 ### ESP32无法连接MQTT
-- 检查服务器IP和端口
+
+- 检查服务器IP和端口（默认1883）
 - 确认防火墙已开放1883端口
 - 检查MQTT用户名密码
-- 使用MQTT客户端测试连接：
-  ```bash
-  mosquitto_sub -h 你的IP -p 1883 -u admin -P admin -t '#' -v
-  ```
+- 确认EMQX服务正在运行
+- 检查EMQX授权规则是否允许连接
 
-### Web界面无法访问
-- 检查服务器是否运行：`pm2 status`
-- 检查端口是否开放：`sudo netstat -tulpn | grep 3000`
-- 查看服务日志：`pm2 logs esp32-cloud`
+### SPIFFS挂载失败
+
+- **首次使用**：这是正常现象，会自动格式化
+- **持续失败**：
+  1. 确认分区表已正确烧录
+  2. 在Arduino IDE中：工具 -> Erase Flash -> All Flash Contents
+  3. 重新编译并烧录
 
 ### 图片无法上传
+
 - 打开浏览器开发者工具查看网络请求
 - 检查设备ID是否正确
 - 确认ESP32在线并已连接MQTT
 - 查看云服务器日志
+- 检查设备是否已绑定
+
+### NVS错误
+
+- `nvs_open failed: NOT_FOUND` - 首次使用时正常，会自动创建命名空间
+- 如果持续出现，检查Flash是否损坏
 
 ## 扩展功能
 
-### 1. 添加设备管理
-可以在云端添加数据库（MongoDB/MySQL）存储设备信息和历史记录。
+### 已实现功能
 
-### 2. 添加图片历史
-保存用户上传的图片，支持快速重新发送。
+- ✅ WiFi AP配网模式
+- ✅ 设备绑定管理
+- ✅ 图片HTTP下载（大图片）
+- ✅ SPIFFS图片缓存
+- ✅ 设备状态上报
+- ✅ 多用户支持
 
-### 3. 定时任务
-支持定时推送图片到设备。
+### 可扩展功能
 
-### 4. 批量控制
-支持同时向多个设备推送图片。
-
-### 5. 更多图片处理选项
-- 更多抖动算法（Atkinson, Burkes等）
-- 自动裁剪和对齐
-- 文字叠加
-- 二维码生成
+1. **OTA升级**：通过MQTT推送固件更新
+2. **定时任务**：支持定时推送图片到设备
+3. **批量控制**：支持同时向多个设备推送图片
+4. **图片历史**：保存用户上传的图片，支持快速重新发送
+5. **更多图片处理选项**：
+   - 更多抖动算法（Atkinson, Burkes等）
+   - 自动裁剪和对齐
+   - 文字叠加
+   - 二维码生成
 
 ## 许可证
 
 基于原Waveshare项目修改，保留原作者版权信息。
 
-## 作者
-
-- 原始项目：Waveshare Team
-- 云端扩展：[Your Name]
-
 ## 参考资料
 
+- [ESP32-C3技术参考手册](https://www.espressif.com/sites/default/files/documentation/esp32-c3_technical_reference_manual_cn.pdf)
+- [合宙ESP32C3-CORE开发板](https://wiki.luatos.com/chips/esp32c3/board.html)
 - [PubSubClient库文档](https://pubsubclient.knolleary.net/)
 - [ArduinoJson文档](https://arduinojson.org/)
 - [EMQX文档](https://www.emqx.io/docs/)
-- [Mosquitto文档](https://mosquitto.org/documentation/)

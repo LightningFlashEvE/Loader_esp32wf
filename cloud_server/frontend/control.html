@@ -1017,6 +1017,7 @@
                         <select id="algorithmSelect" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 0.9em; margin-bottom: 10px;">
                             <option value="floyd_steinberg">Floyd-Steinberg 抖动（适合渐变和细节丰富的图像）</option>
                             <option value="gradient_blend">梯度边界混合（适合线条和边界明显的图像）</option>
+                            <option value="grayscale_color_map">灰阶与颜色映射（将灰度映射到颜色梯度：黑->蓝->绿->黄->红->白）</option>
                         </select>
                         <div id="gradThreshContainer" style="display: none; margin-bottom: 10px;">
                             <label for="gradThreshInput" style="display: block; margin-bottom: 5px; font-size: 0.85em; color: var(--text-light);">
@@ -1125,7 +1126,7 @@
     <input type="hidden" id="height" value="480">
     
     <script src="auth.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=20241220"></script>
     <script src="editor.js"></script>
 </body>
 </html>

@@ -1375,7 +1375,7 @@ def process_sixcolor():
             return jsonify({'success': False, 'error': 'Missing imageData'}), 400
         
         # 验证算法参数
-        if algorithm not in ['floyd_steinberg', 'gradient_blend']:
+        if algorithm not in ['floyd_steinberg', 'gradient_blend', 'grayscale_color_map']:
             return jsonify({'success': False, 'error': f'Invalid algorithm: {algorithm}'}), 400
         
         # 处理图像

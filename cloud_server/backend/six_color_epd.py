@@ -7,6 +7,7 @@
 - 支持多种图像处理算法：
   1. Floyd-Steinberg抖动算法：误差扩散，适合渐变和细节丰富的图像
   2. 梯度边界混合算法：基于Sobel梯度检测边界，在边界区域进行颜色混合，减少量化伪影
+  3. 灰阶与颜色映射算法：将灰度图映射到自定义颜色梯度（黑->蓝->绿->黄->红->白）
 - 转换为4bit格式（每字节两个像素）
 - 生成预览图像
 
@@ -167,6 +168,114 @@ def convert_to_e6_with_dither(img: Image.Image, target_size: Optional[Tuple[int,
     mapped_indices = palette_to_driver[palette_indices]
     
     return paletted, mapped_indices
+
+
+# ==================== 灰阶与颜色映射算法 ====================
+
+def build_grayscale_to_e6_index_map() -> np.ndarray:
+    """
+    构建灰度值直接到E6驱动索引的映射表（256级）
+    
+    颜色梯度按亮度顺序排列，更符合人眼对灰度的感知：
+    黑 -> 蓝 -> 红 -> 绿 -> 黄 -> 白
+    
+    亮度计算（Y = 0.299*R + 0.587*G + 0.114*B）：
+    - 黑色 (0,0,0): 0
+    - 蓝色 (0,0,255): 29
+    - 红色 (255,0,0): 76
+    - 深红色 (128,0,0): 38 (应该在红色段，但可能被映射到蓝色)
+    - 绿色 (0,255,0): 150
+    - 黄色 (255,255,0): 226
+    - 白色 (255,255,255): 255
+    
+    对应E6驱动索引：0x0 -> 0x5 -> 0x3 -> 0x6 -> 0x2 -> 0x1
+    
+    优化分段边界，确保深红色正确映射：
+    - 0-40: 黑色（包含深红色等暗色）
+    - 41-70: 蓝色（蓝色亮度29，范围41-70）
+    - 71-120: 红色（红色亮度76，扩大范围包含深红色）
+    - 121-180: 绿色（绿色亮度150）
+    - 181-235: 黄色（扩大黄色范围，避免被映射为白色）
+    - 236-255: 白色
+    
+    返回：
+        numpy数组，256个值，每个值是对应的E6驱动索引
+    """
+    # E6 驱动索引（按亮度递增顺序：黑、蓝、红、绿、黄、白）
+    e6_indices = [0x0, 0x5, 0x3, 0x6, 0x2, 0x1]
+    
+    # 创建映射表：256个灰度值 -> E6驱动索引
+    index_map = np.zeros(256, dtype=np.uint8)
+    
+    # 优化分段边界，确保深红色和黄色正确映射
+    # 分段边界：[0, 41, 71, 121, 181, 236, 256)
+    boundaries = [0, 41, 71, 121, 181, 236, 256]
+    
+    for i in range(256):
+        # 找到灰度值 i 属于哪个颜色段
+        for segment in range(len(boundaries) - 1):
+            if boundaries[segment] <= i < boundaries[segment + 1]:
+                index_map[i] = e6_indices[segment]
+                break
+        else:
+            # 如果 i == 255，映射到白色
+            index_map[i] = e6_indices[-1]
+    
+    return index_map
+
+
+def convert_to_e6_with_grayscale_color_map(
+    img: Image.Image,
+    target_size: Optional[Tuple[int, int]] = None
+) -> Tuple[Image.Image, np.ndarray]:
+    """
+    将RGB图像转换为E6六色格式，使用灰阶与颜色映射算法（纯色模式）
+    
+    纯色模式：将256级灰度强制量化为6个纯色段，确保相同区域的像素映射到同一颜色，
+    形成完全无抖动的纯色块效果。
+    
+    参数：
+        img: PIL.Image，任意模式，内部会转为RGB
+        target_size: (width, height)，如果提供则先缩放到指定分辨率
+    
+    返回：
+        (mapped_image, color_indices)
+        - mapped_image: PIL.Image (RGB模式，颜色映射后的图像，纯色块)
+        - color_indices: numpy数组 [H, W]，值为驱动索引（0x0, 0x1, 0x2, 0x3, 0x5, 0x6）
+    """
+    # 转换为RGB并调整尺寸
+    rgb_img = img.convert("RGB")
+    if target_size is not None:
+        rgb_img = rgb_img.resize(target_size, Image.LANCZOS)
+    
+    # PIL Image 转 numpy array (RGB格式)
+    img_array = np.array(rgb_img)
+    
+    # 转为灰度图
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    
+    # 构建灰度到E6索引的直接映射表
+    index_map = build_grayscale_to_e6_index_map()
+    
+    # 直接根据灰度值查表得到E6驱动索引
+    # 这个映射表确保：相同灰度值的像素 → 同一个E6颜色 → 纯色块
+    color_indices = index_map[gray]
+    
+    # 根据驱动索引生成RGB图像用于预览（纯色块）
+    # 使用向量化操作，确保每个驱动索引对应唯一的RGB值
+    h, w = color_indices.shape
+    rgb_array = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # 直接映射：每个驱动索引对应一个纯色RGB值
+    for idx, rgb in E6_IDX2RGB.items():
+        mask = (color_indices == idx)
+        if np.any(mask):
+            rgb_array[mask] = rgb
+    
+    # 转回PIL Image
+    mapped_img = Image.fromarray(rgb_array, mode="RGB")
+    
+    return mapped_img, color_indices
 
 
 # ==================== 梯度边界混合算法 ====================
@@ -374,7 +483,7 @@ def build_preview_image(color_indices: np.ndarray) -> Image.Image:
 def process_e6_image(
     img: Image.Image,
     target_size: Optional[Tuple[int, int]] = None,
-    algorithm: Literal['floyd_steinberg', 'gradient_blend'] = 'floyd_steinberg',
+    algorithm: Literal['floyd_steinberg', 'gradient_blend', 'grayscale_color_map'] = 'floyd_steinberg',
     grad_thresh: int = 40
 ) -> dict:
     """
@@ -383,7 +492,7 @@ def process_e6_image(
     参数：
         img: PIL.Image
         target_size: (width, height)，默认(800, 480)
-        algorithm: 处理算法，'floyd_steinberg' 或 'gradient_blend'
+        algorithm: 处理算法，'floyd_steinberg'、'gradient_blend' 或 'grayscale_color_map'
         grad_thresh: 梯度阈值（仅用于 gradient_blend 算法），默认40
     
     返回：
@@ -401,16 +510,25 @@ def process_e6_image(
     # 根据算法选择处理方式
     if algorithm == 'floyd_steinberg':
         paletted, color_indices = convert_to_e6_with_dither(img, target_size)
+        # Floyd-Steinberg算法：使用paletted图像作为预览（包含抖动效果）
+        # paletted是P模式，需要转换为RGB
+        preview = paletted.convert("RGB")
     elif algorithm == 'gradient_blend':
         quantized_img, color_indices = convert_to_e6_with_gradient_blend(
             img, target_size, grad_thresh
         )
         paletted = quantized_img
+        # 梯度边界混合算法：直接使用quantized_img作为预览（包含边界混合效果）
+        preview = quantized_img
+    elif algorithm == 'grayscale_color_map':
+        mapped_img, color_indices = convert_to_e6_with_grayscale_color_map(
+            img, target_size
+        )
+        paletted = mapped_img
+        # 灰阶映射算法：直接使用mapped_img作为预览（已经是纯色块）
+        preview = mapped_img
     else:
         raise ValueError(f"未知的算法: {algorithm}")
-    
-    # 生成预览
-    preview = build_preview_image(color_indices)
     
     # 转换为4bit格式
     data_4bit = convert_indices_to_4bit(color_indices)
@@ -430,7 +548,7 @@ def process_e6_image_from_base64(
     base64_data: str,
     width: int = 800,
     height: int = 480,
-    algorithm: Literal['floyd_steinberg', 'gradient_blend'] = 'floyd_steinberg',
+    algorithm: Literal['floyd_steinberg', 'gradient_blend', 'grayscale_color_map'] = 'floyd_steinberg',
     grad_thresh: int = 40
 ) -> dict:
     """
@@ -440,7 +558,7 @@ def process_e6_image_from_base64(
         base64_data: base64编码的图片数据（不含data:image前缀）
         width: 目标宽度
         height: 目标高度
-        algorithm: 处理算法，'floyd_steinberg' 或 'gradient_blend'
+        algorithm: 处理算法，'floyd_steinberg'、'gradient_blend' 或 'grayscale_color_map'
         grad_thresh: 梯度阈值（仅用于 gradient_blend 算法），默认40
     
     返回：

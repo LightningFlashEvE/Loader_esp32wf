@@ -410,17 +410,49 @@ function authHeaders() {
 // 处理图片 - 简化版：只调用后端API
 // 获取算法参数
 function getAlgorithmParams() {
-    const algorithmSelect = document.getElementById('algorithmSelect');
-    const algorithm = algorithmSelect ? algorithmSelect.value : 'floyd_steinberg';
+    // 尝试多种方式查找算法选择下拉框
+    let algorithmSelect = document.getElementById('algorithmSelect');
+    
+    // 如果找不到，尝试查找所有select元素
+    if (!algorithmSelect) {
+        const allSelects = document.querySelectorAll('select');
+        console.warn('algorithmSelect 元素未找到，尝试查找所有select元素:', allSelects.length);
+        for (let sel of allSelects) {
+            if (sel.id === 'algorithmSelect' || sel.getAttribute('id') === 'algorithmSelect') {
+                algorithmSelect = sel;
+                console.log('找到算法选择下拉框:', sel);
+                break;
+            }
+        }
+    }
+    
+    if (!algorithmSelect) {
+        console.error('❌ algorithmSelect 元素未找到，使用默认算法 floyd_steinberg');
+        console.error('当前DOM中所有select元素:', Array.from(document.querySelectorAll('select')).map(s => ({id: s.id, value: s.value})));
+        return { algorithm: 'floyd_steinberg', gradThresh: 40 };
+    }
+    
+    // 强制读取当前值
+    const algorithm = algorithmSelect.value || algorithmSelect.selectedOptions?.[0]?.value || 'floyd_steinberg';
     const gradThreshInput = document.getElementById('gradThreshInput');
     const gradThresh = (algorithm === 'gradient_blend' && gradThreshInput) ? parseInt(gradThreshInput.value) || 40 : 40;
+    
+    console.log('✅ 获取算法参数:', {
+        algorithm: algorithm,
+        gradThresh: gradThresh,
+        selectValue: algorithmSelect.value,
+        selectedIndex: algorithmSelect.selectedIndex,
+        options: Array.from(algorithmSelect.options).map(opt => ({value: opt.value, text: opt.text, selected: opt.selected}))
+    });
+    
     return { algorithm, gradThresh };
 }
 
 // 算法名称映射
 const algorithmNames = {
     'floyd_steinberg': 'Floyd-Steinberg抖动',
-    'gradient_blend': '梯度边界混合'
+    'gradient_blend': '梯度边界混合',
+    'grayscale_color_map': '灰阶与颜色映射'
 };
 
 function processImage() {
@@ -502,6 +534,7 @@ function processImage() {
     // 获取算法参数
     const { algorithm, gradThresh } = getAlgorithmParams();
     const algorithmName = algorithmNames[algorithm] || algorithm;
+    console.log('实际使用的算法:', algorithm, '算法名称:', algorithmName);
     log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 显示进度条
@@ -1190,6 +1223,7 @@ function processTemplateImage() {
     // 获取算法参数
     const { algorithm, gradThresh } = getAlgorithmParams();
     const algorithmName = algorithmNames[algorithm] || algorithm;
+    console.log('实际使用的算法:', algorithm, '算法名称:', algorithmName);
     log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 调用后端 API
@@ -1279,6 +1313,7 @@ function processTextImage() {
     // 获取算法参数
     const { algorithm, gradThresh } = getAlgorithmParams();
     const algorithmName = algorithmNames[algorithm] || algorithm;
+    console.log('实际使用的算法:', algorithm, '算法名称:', algorithmName);
     log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 调用后端 API
@@ -1719,6 +1754,7 @@ function processMixedImage() {
     // 获取算法参数
     const { algorithm, gradThresh } = getAlgorithmParams();
     const algorithmName = algorithmNames[algorithm] || algorithm;
+    console.log('实际使用的算法:', algorithm, '算法名称:', algorithmName);
     log(`正在调用后端6色算法处理（${algorithmName}）...`);
     
     // 显示进度条

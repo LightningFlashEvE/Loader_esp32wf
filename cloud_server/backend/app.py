@@ -401,6 +401,7 @@ def get_devices_status():
                 'deviceName': device.get('deviceName', device_id),
                 'addedAt': device.get('addedAt').isoformat() if hasattr(device.get('addedAt'), 'isoformat') else device.get('addedAt'),
                 'online': False,  # Deep-sleep架构下设备通常离线
+                'sleeping': False,  # Deep-sleep 架构：离线并不一定异常，后端给出“睡眠态”提示
                 'claimed': device.get('claimed', False),
                 'imageVersion': device.get('imageVersion', 0)
             }
@@ -413,6 +414,10 @@ def get_devices_status():
                     current_time = int(time.time() * 1000)
                     # Deep-sleep架构：最近5分钟内有活动则认为在线
                     device_info['online'] = (current_time - last_seen < 300000)
+                    # Deep-sleep架构：在一个唤醒周期内无上报视为“睡眠中”，超过周期则视为“离线/失联”
+                    # 默认周期：12小时唤醒一次（设备也可能按键唤醒），这里给 1 小时宽限
+                    sleep_window_ms = 13 * 60 * 60 * 1000
+                    device_info['sleeping'] = (not device_info['online']) and (current_time - last_seen < sleep_window_ms)
                     device_info['lastSeen'] = last_seen
             
             devices.append(device_info)
@@ -723,8 +728,10 @@ def save_page():
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
 
+        clean_id = normalize_device_id(device_id)
+
         user = getattr(request, 'user', None)
-        if not ensure_device_owner(device_id, user):
+        if not ensure_device_owner(clean_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
         
         if pages_collection is None:
@@ -734,7 +741,7 @@ def save_page():
         
         if page_id:
             result = pages_collection.update_one(
-                {'pageId': page_id, 'deviceId': device_id},
+                {'pageId': page_id, 'deviceId': clean_id},
                 {'$set': {
                     'name': page_name,
                     'type': page_type,
@@ -753,7 +760,7 @@ def save_page():
             
             page = {
                 'pageId': page_id,
-                'deviceId': device_id,
+                'deviceId': clean_id,
                 'name': page_name,
                 'type': page_type,
                 'data': page_data,
@@ -878,8 +885,10 @@ def save_page_list():
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
 
+        clean_id = normalize_device_id(device_id)
+
         user = getattr(request, 'user', None)
-        if not ensure_device_owner(device_id, user):
+        if not ensure_device_owner(clean_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
         
         if page_lists_collection is None:
@@ -889,13 +898,13 @@ def save_page_list():
         
         if is_active:
             page_lists_collection.update_many(
-                {'deviceId': device_id},
+                {'deviceId': clean_id},
                 {'$set': {'isActive': False}}
             )
         
         if list_id:
             result = page_lists_collection.update_one(
-                {'listId': list_id, 'deviceId': device_id},
+                {'listId': list_id, 'deviceId': clean_id},
                 {'$set': {
                     'name': list_name,
                     'pages': pages,
@@ -914,7 +923,7 @@ def save_page_list():
             
             page_list = {
                 'listId': list_id,
-                'deviceId': device_id,
+                'deviceId': clean_id,
                 'name': list_name,
                 'pages': pages,
                 'interval': interval,

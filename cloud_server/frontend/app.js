@@ -671,15 +671,16 @@ function hideProgress() {
     if (container) container.style.display = 'none';
 }
 
-// 发送数据到设备（旧版，兼容性保留）
+// 旧版分片上传（历史遗留）：Deep-sleep + HTTP Pull 架构下不再使用
+// 现在图片数据应一次性上传到云端，由设备唤醒后自行拉取。
 async function sendDataToDevice(deviceId, dataString, label = '上传数据') {
     return sendDataToDeviceInChunks(deviceId, dataString, 1000);
 }
 
-// 分批发送数据到设备（支持自定义缓存大小）
+// 分批发送（历史遗留）：保留但不建议使用
 async function sendDataToDeviceInChunks(deviceId, dataString, chunkSize = 1000) {
     const totalChunks = Math.ceil(dataString.length / chunkSize);
-    console.log(`📦 开始分批发送: 总长度=${dataString.length}, 每批=${chunkSize}, 共${totalChunks}批`);
+    console.log(`📦 开始分批上传(旧): 总长度=${dataString.length}, 每批=${chunkSize}, 共${totalChunks}批`);
     
     for (let i = 0; i < dataString.length; i += chunkSize) {
         const chunk = dataString.substring(i, i + chunkSize);
@@ -704,15 +705,15 @@ async function sendDataToDeviceInChunks(deviceId, dataString, chunkSize = 1000) 
         updateProgress(Math.min(progress, 100));
         
         const currentChunk = Math.floor(i / chunkSize) + 1;
-        log(`已发送 ${currentChunk}/${totalChunks} 批 (${Math.min(i + chunkSize, dataString.length)}/${dataString.length} 字符)`);
+        log(`已上传 ${currentChunk}/${totalChunks} 批（旧）(${Math.min(i + chunkSize, dataString.length)}/${dataString.length} 字符)`);
         
         await sleep(100); // 等待ESP32处理
     }
     
-    log(`✅ 所有数据已发送完成 (${totalChunks}批)`, 'success');
+    log(`✅ 所有数据已上传完成（旧）(${totalChunks}批)`, 'success');
 }
 
-// 上传到设备（简化版：只支持6色处理）
+// 发布到云端（Deep-sleep + HTTP Pull）：设备下次唤醒后自动更新
 async function uploadToDevice() {
     // 检查是否有处理后的数据
     if (!window.e6Data4bit) {
@@ -748,13 +749,13 @@ async function uploadToDevice() {
     const width = 800;
     const height = 480;
     
-    console.log('📤 下发参数:', { deviceId, epdType, width, height });
+    console.log('📤 发布参数:', { deviceId, epdType, width, height });
     
     try {
-        showProgress('初始化中...');
-        log('正在初始化墨水屏...');
+        showProgress('准备发布...');
+        log('正在准备发布（记录屏幕参数）...');
         
-        // 1. 初始化EPD
+        // 1. 记录EPD参数（云端记录即可，设备会在唤醒后自行初始化/刷新）
         const initResponse = await fetch(`${API_BASE}/api/epd/init`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -770,10 +771,10 @@ async function uploadToDevice() {
         
         await sleep(500);
         
-        log(`正在上传图像数据 (${width}x${height})...`);
+        log(`正在上传图像数据到云端 (${width}x${height})...`);
         
-        showProgress('上传6色数据（一次下发）...');
-        log(`上传6色数据（4bit格式，一次下发）...`);
+        showProgress('上传6色数据（云端持久化）...');
+        log(`上传6色数据（4bit格式，云端持久化保存）...`);
         
         // 从后端返回的base64数据解码
         const binaryString = atob(window.e6Data4bit);
@@ -795,9 +796,9 @@ async function uploadToDevice() {
         
         const dataString = sixColorDataString.join('');
         console.log(`📊 6色数据: ${dataString.length} 字符 (${width}x${height}, 4bit格式，后端处理)`);
-        console.log(`📦 一次发送所有数据 (${dataString.length} 字符)`);
+        console.log(`📦 一次上传所有数据 (${dataString.length} 字符)`);
         
-        // 一次发送所有数据（不添加长度后缀，因为ESP32直接写入Flash）
+        // 一次上传所有数据到云端（设备唤醒后通过HTTP拉取）
         const response = await fetch(`${API_BASE}/api/epd/load`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -811,28 +812,18 @@ async function uploadToDevice() {
         if (!response.ok) {
             throw new Error('数据发送失败: ' + await response.text());
         }
-        
-        log(`✅ 数据已发送完成 (${dataString.length} 字符)`, 'success');
-        
-        // 显示
-        showProgress('刷新显示...');
-        updateProgress(100);
-        log('正在刷新显示...');
-        const showResponse = await fetch(`${API_BASE}/api/epd/show`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ deviceId })
-        });
-        
-        if (!showResponse.ok) {
-            throw new Error('显示命令失败');
-        }
-        
-        hideProgress();
-        log('下发完成！', 'success');
-        log('请等待30秒刷新...', 'info');
 
-        // 更新顶部“最近下发时间”显示
+        // 读取后端返回的版本号（用于提示用户）
+        let respJson = null;
+        try { respJson = await response.json(); } catch (e) { respJson = null; }
+        const verText = respJson && respJson.imageVersion ? `，版本：v=${respJson.imageVersion}` : '';
+        
+        updateProgress(100);
+        hideProgress();
+        log(`✅ 已发布到云端${verText}（设备下次唤醒会自动更新）`, 'success');
+        log('提示：设备无需在线；按键/定时唤醒后才会拉取并刷新墨水屏。', 'info');
+        
+        // 更新顶部“最近发布时间”显示（如果页面有该元素）
         const lastUpdateEl = document.getElementById('lastUpdateDisplay');
         if (lastUpdateEl) {
             const now = new Date();

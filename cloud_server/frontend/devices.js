@@ -183,18 +183,7 @@ function renderDevices() {
         // 否则检查lastSeen时间
         const isOnline = isSleeping ? (status.online === true) : (status.online === true && (Date.now() - (status.lastSeen || 0) < 60000));
         
-        // 调试：打印状态判断
-        if (isSleeping || device.id === '096D88') {  // 临时调试特定设备
-            console.log(`[渲染] 设备 ${device.id}:`, {
-                isSleeping,
-                isOnline,
-                statusOnline: status.online,
-                statusSleeping: status.sleeping,
-                lastSeen: status.lastSeen,
-                now: Date.now(),
-                diff: Date.now() - (status.lastSeen || 0)
-            });
-        }
+        // 调试日志（如需开启，可在此添加受控开关；不要保留硬编码设备ID）
         
         // 确定显示状态：睡眠 > 在线 > 离线
         let statusText, statusColor, statusClass;

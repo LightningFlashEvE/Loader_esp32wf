@@ -55,6 +55,8 @@
 
 /* Flash临时存储配置 */
 #define FLASH_TEMP_FILE "/temp_image.bin"
+// 7.3" E6: 800x480，每像素 4bit（a~p 编码为单字符），总字符数固定
+#define EPD_EXPECTED_CHARS 384000
 
 /* NVS 配置 */
 #define PREF_NAMESPACE "device"
@@ -459,6 +461,18 @@ bool downloadImageToFlash(const String& imageUrl) {
     
     int contentLength = http.getSize();
     Serial.printf("   内容长度: %d 字节 (%.2f KB)\n", contentLength, contentLength / 1024.0);
+
+    // 设备端最小防护：如果云端返回了 Content-Length，但不是期望长度，直接判失败
+    // 这样可以避免把“坏/半截数据”交给 EPD 驱动，导致 busy 卡死
+    if (contentLength > 0 && contentLength != EPD_EXPECTED_CHARS) {
+        Serial.printf("❌ 内容长度异常，期望 %d，实际 %d，放弃下载\n", EPD_EXPECTED_CHARS, contentLength);
+        http.end();
+        flashTempFile.close();
+        flashTempFileOpen = false;
+        SPIFFS.remove(FLASH_TEMP_FILE);
+        flashTempFileSize = 0;
+        return false;
+    }
     
     // 流式下载，分块写入SPIFFS
     WiFiClient *stream = http.getStreamPtr();
@@ -479,6 +493,12 @@ bool downloadImageToFlash(const String& imageUrl) {
             noDataCount = 0;
             int bytesToRead = (available > sizeof(buffer)) ? sizeof(buffer) : available;
             int bytesRead = stream->readBytes(buffer, bytesToRead);
+
+            if (bytesRead <= 0) {
+                noDataCount++;
+                delay(10);
+                continue;
+            }
             
             // 直接写入Flash
             flashTempFile.write(buffer, bytesRead);
@@ -492,6 +512,11 @@ bool downloadImageToFlash(const String& imageUrl) {
             // 每64KB输出一次进度
             if (totalRead % 65536 == 0) {
                 Serial.printf("   已下载: %.2f KB\n", totalRead / 1024.0);
+            }
+
+            // 如果 contentLength 未知（-1），但我们已经达到期望长度，也直接结束（防止超读）
+            if (contentLength == -1 && totalRead >= EPD_EXPECTED_CHARS) {
+                break;
             }
         } else {
             noDataCount++;
@@ -509,16 +534,21 @@ bool downloadImageToFlash(const String& imageUrl) {
     http.end();
     
     // 检查下载结果
-    int expectedSize = 384000;  // 800x480 4bit格式 = 384000字符
     Serial.printf("✅ 下载完成: %d 字符 (%.2f KB)\n", flashTempFileSize, flashTempFileSize / 1024.0);
-    Serial.printf("   期望大小: %d 字符\n", expectedSize);
-    
-    if (flashTempFileSize < expectedSize * 0.9) {  // 允许10%误差
-        Serial.println("⚠️  警告：下载的数据可能不完整");
+    Serial.printf("   期望大小: %d 字符\n", EPD_EXPECTED_CHARS);
+
+    // 设备端最小防护：只要不是“完全匹配”，就视为失败并删除临时文件
+    if (flashTempFileSize != EPD_EXPECTED_CHARS) {
+        Serial.printf("❌ 下载不完整：期望 %d，实际 %d，删除临时文件并放弃本次刷新\n",
+                      EPD_EXPECTED_CHARS, flashTempFileSize);
+        SPIFFS.remove(FLASH_TEMP_FILE);
+        flashTempFileSize = 0;
+        Serial.println("========== 下载失败 ==========\n");
+        return false;
     }
     
     Serial.println("========== 下载完成 ==========\n");
-    return flashTempFileSize > 0;
+    return true;
 }
 
 /**
@@ -530,6 +560,24 @@ void displayDownloadedImage() {
     if (!SPIFFS.exists(FLASH_TEMP_FILE)) {
         Serial.println("❌ 临时文件不存在");
         return;
+    }
+
+    // 设备端最小防护：显示前再做一次长度检查，避免 EPD 驱动因数据异常 busy 卡死
+    {
+        File f = SPIFFS.open(FLASH_TEMP_FILE, "r");
+        if (!f) {
+            Serial.println("❌ 无法打开临时文件");
+            SPIFFS.remove(FLASH_TEMP_FILE);
+            return;
+        }
+        size_t sz = f.size();
+        f.close();
+        if ((int)sz != EPD_EXPECTED_CHARS) {
+            Serial.printf("❌ 临时文件大小异常：期望 %d，实际 %d；跳过刷新并删除临时文件\n",
+                          EPD_EXPECTED_CHARS, (int)sz);
+            SPIFFS.remove(FLASH_TEMP_FILE);
+            return;
+        }
     }
     
     // 初始化EPD

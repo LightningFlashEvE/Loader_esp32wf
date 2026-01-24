@@ -32,6 +32,29 @@ app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)  # 允许跨域请求
 
+# ==================== EPD 数据格式（7.3" E6，800x480，4bit a~p） ====================
+EPD_WIDTH = 800
+EPD_HEIGHT = 480
+EPD_EXPECTED_CHARS = EPD_WIDTH * EPD_HEIGHT  # 384000
+EPD_ALLOWED_CHARS = set('abcdefghijklmnop')
+
+def validate_epd_text_payload(image_data: str):
+    """校验 EPD 原始数据（a~p 编码字符串）是否完整且合法。
+
+    目标：尽量把“数据不完整/格式异常”的问题拦在云端发布阶段，
+    避免设备端下载后才发现缺数据导致白屏。
+    """
+    if not isinstance(image_data, str) or not image_data:
+        return False, 'Empty image data'
+    if len(image_data) != EPD_EXPECTED_CHARS:
+        return False, f'Invalid length: expected {EPD_EXPECTED_CHARS}, got {len(image_data)}'
+    # 快速字符集校验（a~p），允许集合最多 16 种字符，set() 成本很小
+    invalid = set(image_data) - EPD_ALLOWED_CHARS
+    if invalid:
+        bad = ''.join(sorted(list(invalid))[:8])
+        return False, f'Invalid chars: {bad}'
+    return True, None
+
 # ==================== MongoDB 连接 ====================
 mongo_client = None
 db = None
@@ -61,8 +84,18 @@ def save_device_image(device_id: str, image_data: str) -> bool:
     """保存设备图片数据到磁盘"""
     try:
         image_path = get_device_image_path(device_id)
-        with open(image_path, 'w', encoding='utf-8') as f:
+        # 原子写入：先写临时文件，再 replace，避免出现“文件被半写入”的情况
+        tmp_path = image_path.with_suffix(image_path.suffix + '.tmp')
+        with open(tmp_path, 'w', encoding='utf-8', newline='') as f:
             f.write(image_data)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                # 某些环境/文件系统可能不支持 fsync，忽略但仍然 replace
+                pass
+        tmp_path.replace(image_path)
+
         print(f'💾 图片已保存: {image_path} ({len(image_data)} 字符)')
         return True
     except Exception as e:
@@ -488,6 +521,11 @@ def device_status():
             if image_path.exists() and image_version > 0:
                 # 构建稳定的下载URL
                 response['imageUrl'] = f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/raw/{clean_id}?v={image_version}'
+                # 返回云端侧元数据，设备可做轻量校验（不强制）
+                if device.get('imageSizeChars') is not None:
+                    response['imageSizeChars'] = device.get('imageSizeChars')
+                if device.get('imageSha256') is not None:
+                    response['imageSha256'] = device.get('imageSha256')
             
             print(f'📊 设备 {clean_id} 查询状态: claimed=True, imageVersion={image_version}')
         else:
@@ -1196,6 +1234,17 @@ def epd_load():
     
     clean_id = normalize_device_id(device_id)
     
+    # 发布阶段就做完整性校验：长度/字符集不符合直接拒绝
+    ok, err = validate_epd_text_payload(image_data)
+    if not ok:
+        print(f'❌ 发布数据校验失败: {clean_id} -> {err}')
+        return jsonify({'success': False, 'error': f'Invalid EPD data: {err}'}), 400
+
+    # 计算元数据（用于 status 提示 / 设备轻量校验）
+    image_size_chars = len(image_data)
+    image_size_bytes = len(image_data.encode('utf-8'))
+    image_sha256 = hashlib.sha256(image_data.encode('utf-8')).hexdigest()
+
     # 持久化保存图片数据
     if not save_device_image(clean_id, image_data):
         return jsonify({'success': False, 'error': 'Failed to save image'}), 500
@@ -1211,6 +1260,9 @@ def epd_load():
             {
                 '$set': {
                     'imageVersion': new_version,
+                    'imageSizeChars': image_size_chars,
+                    'imageSizeBytes': image_size_bytes,
+                    'imageSha256': image_sha256,
                     'updatedAt': datetime.utcnow()
                 }
             }
@@ -1225,7 +1277,9 @@ def epd_load():
             'success': True, 
             'message': 'Image saved, device will update on next wake',
             'imageVersion': new_version,
-            'imageUrl': f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/raw/{clean_id}?v={new_version}'
+            'imageUrl': f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/raw/{clean_id}?v={new_version}',
+            'imageSizeChars': image_size_chars,
+            'imageSha256': image_sha256
         })
     
     return jsonify({'success': True, 'message': 'Image saved'})
@@ -1238,35 +1292,46 @@ def epd_raw_download(device_id):
     """
     clean_id = normalize_device_id(device_id)
     
-    # 从磁盘加载图片数据
-    image_data = load_device_image(clean_id)
-    
-    if not image_data:
+    image_path = get_device_image_path(clean_id)
+    if not image_path.exists():
         print(f'❌ 图片不存在: {clean_id}')
         return jsonify({'error': 'Image not found'}), 404
-    
-    data_size = len(image_data)
-    data_size_bytes = len(image_data.encode('utf-8'))
-    expected_size = 384000  # 800x480 4bit格式
-    
+
+    data_size_bytes = image_path.stat().st_size
     print(f'📥 ESP32下载图片: {clean_id}')
-    print(f'   数据大小: {data_size} 字符 ({data_size_bytes/1024:.2f} KB)')
-    
-    if data_size != expected_size:
-        print(f'⚠️  数据大小不匹配: 期望 {expected_size}, 实际 {data_size}')
-    
-    # 返回纯文本数据
-    return Response(
-        image_data,
-        status=200,
-        mimetype='text/plain; charset=utf-8',
-        headers={
-            'Content-Length': str(data_size_bytes),
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
+    print(f'   文件大小: {data_size_bytes} 字节 ({data_size_bytes/1024:.2f} KB)')
+
+    if data_size_bytes != EPD_EXPECTED_CHARS:
+        print(f'⚠️  数据大小不匹配: 期望 {EPD_EXPECTED_CHARS}, 实际 {data_size_bytes}（磁盘文件可能异常）')
+
+    # 用 send_file 直接流式发送文件，减少内存占用，并提供条件请求/ETag（更利于代理/断点续传扩展）
+    resp = send_file(
+        image_path,
+        mimetype='text/plain',
+        conditional=True,
+        etag=True,
+        max_age=0
     )
+    resp.headers['Content-Type'] = 'text/plain; charset=utf-8'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    resp.headers['Accept-Ranges'] = 'bytes'
+    resp.headers['X-EPD-Expected-Chars'] = str(EPD_EXPECTED_CHARS)
+
+    # 如果 DB 里有 hash，就带上；没有也不强制（兼容旧数据）
+    try:
+        if devices_collection is not None:
+            d = devices_collection.find_one({'deviceId': clean_id}, {'_id': 0, 'imageSha256': 1, 'imageSizeChars': 1})
+            if d:
+                if d.get('imageSha256'):
+                    resp.headers['X-EPD-SHA256'] = d['imageSha256']
+                if d.get('imageSizeChars') is not None:
+                    resp.headers['X-EPD-Chars'] = str(d['imageSizeChars'])
+    except Exception:
+        pass
+
+    return resp
 
 @app.route('/api/epd/show', methods=['POST'])
 @login_required

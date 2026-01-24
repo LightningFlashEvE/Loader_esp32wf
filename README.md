@@ -1,20 +1,27 @@
-# ESP32-C3 墨水屏云端控制系统
+# ESP32-C3 墨水屏云端控制系统（Deep-sleep + HTTP Pull，无 MQTT）
 
-通过云服务器和MQTT协议远程控制ESP32-C3墨水屏显示图片。
+本项目采用 **Deep-sleep + 按键/定时唤醒 + HTTP 拉取更新** 的低功耗架构：
 
-## 系统架构
+- 设备绝大多数时间处于 **Deep-sleep（µA 级）**
+- 仅在 **GPIO0 按键** 或 **12 小时定时** 唤醒后联网
+- 唤醒后通过 HTTP 查询版本并按需下载图片，刷新墨水屏后立刻回到 Deep-sleep
+- **服务器端上传图片时不要求设备在线**；设备下次唤醒即可拉到最新内容
+
+## 系统架构（无 MQTT）
 
 ```
-用户浏览器 <--> 云服务器 (Web + MQTT) <--> ESP32-C3 (MQTT客户端) <--> 墨水屏
+用户浏览器 <--> 云服务器 (Nginx + Flask + MongoDB) <--> ESP32-C3 (HTTP 客户端/Deep-sleep) <--> 墨水屏
 ```
 
-### 工作流程
+### 工作流程（核心）
 
-1. 用户通过浏览器访问云服务器的Web界面
-2. 上传图片并选择处理算法（支持三种算法：Floyd-Steinberg抖动、梯度边界混合、灰阶颜色映射）
-3. 云服务器处理图片并转换为E6六色格式（4bit打包）
-4. 云服务器通过MQTT将处理后的数据发送给ESP32-C3
-5. ESP32-C3接收MQTT消息并驱动墨水屏显示
+1. 用户在 Web 页面处理图片并点击 **“发布”**（上传到云端）
+2. 云端将最新 EPD 数据持久化保存：`cloud_server/backend/data/epd/<deviceId>/latest.txt`，并递增 `devices.imageVersion`
+3. 设备在按键/定时唤醒后执行一次性流程：
+   - `POST /api/device/status` 获取 `claimed/imageVersion/imageUrl`
+   - 若 `imageVersion > NVS(imgVer)`：`GET imageUrl` 流式下载到 SPIFFS 临时文件 → 刷新墨水屏 → 写入 NVS 新版本 → Deep-sleep
+   - 若版本一致：直接 Deep-sleep
+   - 若未绑定：显示设备码/配对码提示 → Deep-sleep
 
 ## 硬件要求
 
@@ -50,6 +57,12 @@
 
 **注意**：这两个引脚在系统初始化时自动设置为输出模式并输出低电平。
 
+### Deep-sleep 唤醒按键（GPIO0）
+
+- **唤醒引脚**：GPIO0（低电平唤醒）
+- **建议硬件**：GPIO0 通过 **10k 上拉到 3.3V**，按键按下接地
+- 仅使用内部上拉也可工作，但抗干扰不如外部上拉稳定
+
 ### 系统保留引脚（ESP32-C3-CORE）
 
 | 功能 | GPIO | 说明 | 备注 |
@@ -76,7 +89,8 @@
 │   └── docker-compose.yml    # Docker部署配置
 │
 ├── Loader_esp32wf.ino         # ESP32主程序
-├── mqtt_config.h              # MQTT配置和处理
+├── http_update.h              # HTTP 拉取更新（Deep-sleep 架构核心）
+├── mqtt_config.h              # 历史遗留（已不再依赖/不再使用）
 ├── wifi_config.h              # WiFi配网功能
 ├── DEV_Config.h/cpp           # 硬件配置（引脚定义）
 ├── epd.h                      # 墨水屏驱动接口
@@ -99,33 +113,6 @@
 - 公网IP或域名
 - Python 3.8+
 - MongoDB（用于设备管理）
-- **EMQX MQTT Broker**（推荐使用EMQX）
-
-#### 安装EMQX MQTT Broker
-
-```bash
-# 下载并安装EMQX
-wget https://www.emqx.com/en/downloads/broker/5.0.0/emqx-5.0.0-ubuntu20.04-amd64.deb
-sudo apt install ./emqx-5.0.0-ubuntu20.04-amd64.deb
-
-# 启动服务
-sudo systemctl start emqx
-sudo systemctl enable emqx
-
-# 访问Web管理界面
-# http://你的服务器IP:18083
-# 默认用户名: admin
-# 默认密码: public（首次登录会要求修改）
-```
-
-#### 配置EMQX授权规则
-
-在EMQX Web管理界面中：
-1. 进入 **访问控制** -> **授权** -> **内置数据库**
-2. 创建规则：允许所有主题（测试用）
-   - 权限：允许
-   - 操作：全部
-   - 主题：`#`
 
 #### 安装MongoDB
 
@@ -166,13 +153,13 @@ docker compose logs -f frontend  # 前端日志
 cd backend
 pip3 install -r requirements.txt
 
-# 3. 配置环境变量
+# 3. 配置环境变量（无 MQTT）
 # 编辑 docker-compose.yml 或设置环境变量：
-export MQTT_BROKER=8.135.238.216
-export MQTT_PORT=1883
-export MQTT_USER=admin
-export MQTT_PASS=admin
-export MONGODB_URI=mongodb://localhost:27017/esp32_epd
+export MONGODB_URI="mongodb://<user>:<pass>@<host>:27017/esp32_epd?authSource=admin"
+export MONGODB_DB="esp32_epd"
+# 用于 status 返回 imageUrl（建议填公网域名或公网IP）
+export FLASK_HOST="<public-ip-or-domain>"
+export FLASK_PORT="5000"
 
 # 4. 初始化数据库索引
 python3 create_indexes.py
@@ -187,8 +174,6 @@ python3 app.py
 # 开放端口
 sudo ufw allow 80/tcp      # Web服务（Nginx）
 sudo ufw allow 5000/tcp    # Flask后端（如果直接访问）
-sudo ufw allow 1883/tcp    # MQTT
-sudo ufw allow 18083/tcp   # EMQX管理界面
 sudo ufw enable
 ```
 
@@ -212,20 +197,11 @@ sudo ufw enable
    - 工具 -> Upload Speed -> **921600**
 
 3. **安装依赖库**：
-   - PubSubClient (by Nick O'Leary)
    - ArduinoJson (by Benoit Blanchon)
 
-4. **修改配置**：
-
-打开 `mqtt_config.h`，修改：
-
-```cpp
-// MQTT配置
-#define MQTT_HOST "8.135.238.216"  // 改成你的云服务器IP
-#define MQTT_PORT 1883
-#define MQTT_USER "admin"
-#define MQTT_PASS "admin"
-```
+4. **说明**：
+   - 设备端已改为 `http_update.h` 的 **HTTP 拉取**模式，不再依赖 PubSubClient/MQTT。
+   - 服务器地址/端口在 `http_update.h` 中通过 `CLOUD_API_HOST/CLOUD_API_PORT` 配置。
 
 5. **分区表配置**：
 
@@ -270,16 +246,10 @@ spiffs,   data, spiffs,  0x250000, 0x1B0000,
 ✅ WiFi已连接
 IP地址: 192.168.10.143
 ========================================
-  MQTT云端控制模式
+  Deep-sleep + HTTP 更新模式
 ========================================
-完整MAC地址: 3C:8A:1F:B6:DA:20
-设备码模式: 后6位
-⭐ 设备码: B6DA20
-MQTT服务器: 8.135.238.216:1883
-========================================
-✅ MQTT已连接
-订阅主题: dev/B6DA20/down/epd
-✅ 系统就绪，等待云端命令...
+⏰ 唤醒原因: GPIO按键唤醒 / 定时器唤醒
+🔄 开始一次性更新判定...
 ```
 
 2. **访问Web界面**：
@@ -302,47 +272,8 @@ MQTT服务器: 8.135.238.216:1883
      - **梯度边界混合**：适合线条和边界明显的图像，在边界区域进行颜色混合
      - **灰阶与颜色映射**：将灰度映射到颜色梯度（黑->蓝->红->绿->黄->白），纯色块效果
    - 点击"处理并预览"查看效果
-   - 点击"上传到设备"
-   - 墨水屏会显示处理后的图片
-
-## MQTT主题说明
-
-### 下行主题（云端 -> ESP32）
-
-- `dev/{deviceId}/down/epd` - EPD控制命令
-
-命令格式：
-```json
-// 初始化EPD
-{"cmd": "EPD", "type": 0, "timestamp": 1234567890}
-
-// 加载数据（小图片直接传输）
-{"cmd": "LOAD", "data": [0,255,128,...], "length": 1000, "timestamp": 1234567890}
-
-// 下载命令（大图片通过HTTP下载）
-{"cmd": "DOWNLOAD", "url": "http://...", "timestamp": 1234567890}
-
-// 切换通道
-{"cmd": "NEXT", "timestamp": 1234567890}
-
-// 显示
-{"cmd": "SHOW", "timestamp": 1234567890}
-```
-
-### 上行主题（ESP32 -> 云端）
-
-- `dev/{deviceId}/up/status` - 设备状态上报
-
-格式：
-```json
-{
-  "deviceId": "B6DA20",
-  "rssi": -45,
-  "ip": "192.168.10.143",
-  "uptime_ms": 12345678,
-  "freeHeap": 200000
-}
-```
+   - 点击 **“发布”**
+   - 图片会保存到云端，设备下次唤醒后自动拉取并刷新
 
 ## Flash存储说明
 
@@ -359,13 +290,13 @@ MQTT服务器: 8.135.238.216:1883
 
 ### SPIFFS使用
 
-- **用途**：存储临时图片数据（避免内存不足）
+- **用途**：存储临时图片数据（避免内存不足；下载过程流式写入）
 - **自动格式化**：首次使用时自动格式化
 - **文件路径**：`/temp_image.bin`
 
 ## 设备码说明
 
-设备码基于MAC地址生成，支持三种模式（在 `mqtt_config.h` 中配置）：
+设备码基于MAC地址生成，支持三种模式（在 `http_update.h` 中配置）：
 
 - **模式0**：完整12位（例如：`3C8A1FB6DA20`）
 - **模式1**：前6位（例如：`3C8A1F`）
@@ -380,13 +311,11 @@ MQTT服务器: 8.135.238.216:1883
 - 查看串口输出的错误信息
 - 尝试使用AP配网模式重新配置
 
-### ESP32无法连接MQTT
+### 设备不更新图片
 
-- 检查服务器IP和端口（默认1883）
-- 确认防火墙已开放1883端口
-- 检查MQTT用户名密码
-- 确认EMQX服务正在运行
-- 检查EMQX授权规则是否允许连接
+- 确认 `/api/device/status` 返回的 `imageVersion` 是否 **大于** 设备本地 `imgVer`
+- 确认发布后后端日志是否出现版本递增（例如 `2 -> 3`）
+- 设备端会把图片版本保存在 NVS：`namespace=device key=imgVer`
 
 ### SPIFFS挂载失败
 
@@ -400,7 +329,7 @@ MQTT服务器: 8.135.238.216:1883
 
 - 打开浏览器开发者工具查看网络请求
 - 检查设备ID是否正确
-- 确认ESP32在线并已连接MQTT
+- Deep-sleep 架构下设备大多数时间离线是正常现象；设备无需在线也能“发布”成功
 - 查看云服务器日志
 - 检查设备是否已绑定
 
@@ -439,59 +368,11 @@ MQTT服务器: 8.135.238.216:1883
 
 ## 功耗管理与睡眠模式
 
-### 当前实现：WiFi Modem Sleep
+### 当前实现：Deep-sleep（推荐）
 
-设备在空闲时会进入"浅度睡眠"模式（实际为WiFi Modem Sleep）：
-
-- **实现方式**：使用 `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` 让WiFi模块进入低功耗模式
-- **功耗水平**：从 ~80mA 降至 ~20-30mA
-- **特点**：
-  - CPU仍在运行，继续执行 `MQTT__loop()` 检查
-  - 保持MQTT连接，可以实时接收云端消息
-  - 收到MQTT消息时自动唤醒
-
-### 睡眠状态下的电流尖峰
-
-在睡眠状态下，电流波形会出现周期性尖峰（约15-20秒一次，峰值~230mA），原因包括：
-
-1. **WiFi Modem Sleep的周期性唤醒**：
-   - WiFi模块需要定期唤醒以接收AP的beacon帧（通常每100ms）
-   - 处理DTIM（Delivery Traffic Indication Message）周期
-   - 维持WiFi连接
-
-2. **MQTT Keepalive心跳**：
-   - MQTT客户端每60秒发送心跳包维持连接
-   - 每次发送会短暂唤醒WiFi模块
-
-3. **代码中的周期性检查**：
-   - 睡眠状态下每10秒执行一次 `mqttClient.loop()` 检查
-   - 确保MQTT连接正常，处理收到的消息
-
-4. **WiFi数据包处理**：
-   - 即使没有主动发送数据，WiFi模块仍需处理接收到的数据包、ACK等
-
-### 为什么不用真正的ESP32 Light Sleep？
-
-当前实现虽然函数名为 `enterLightSleep()`，但**并未使用ESP32的Light Sleep API**（`esp_light_sleep()`），原因：
-
-- **保持实时响应**：需要保持MQTT连接，实时接收云端命令
-- **CPU需要运行**：需要定期执行 `mqttClient.loop()` 处理消息
-- **架构限制**：Light Sleep会完全停止CPU，无法在睡眠中执行代码
-
-### 进一步优化建议
-
-如果需要更低功耗（降至1-2mA），可以考虑：
-
-1. **使用真正的Light Sleep**：
-   - 配置定时器唤醒（每30-60秒）
-   - 唤醒后执行 `mqttClient.loop()` 检查消息
-   - 使用WiFi事件唤醒（收到数据包时自动唤醒）
-   - 需要重新设计状态管理架构
-
-2. **优化当前实现**：
-   - 增加MQTT keepalive间隔（例如120秒）
-   - 将睡眠状态下的MQTT检查间隔从10秒增加到30-60秒
-   - 使用 `WIFI_PS_MAX_MODEM` 进一步降低功耗（可能影响响应速度）
+- 设备不保持常驻连接，不常驻 loop
+- 唤醒后执行一次性 HTTP 拉取流程，完成后立即回到 Deep-sleep
+- 墨水屏断电仍保持画面，因此无需常供电刷新
 
 ## 扩展功能
 
@@ -499,13 +380,12 @@ MQTT服务器: 8.135.238.216:1883
 
 - ✅ WiFi AP配网模式
 - ✅ 设备绑定管理
-- ✅ 图片HTTP下载（大图片）
-- ✅ SPIFFS图片缓存
-- ✅ 设备状态上报
+- ✅ 图片发布到云端持久化（设备离线可用）
+- ✅ 设备唤醒后 HTTP 拉取更新（流式写入 SPIFFS）
 - ✅ 多用户支持
 - ✅ 三种图像处理算法（Floyd-Steinberg抖动、梯度边界混合、灰阶颜色映射）
 - ✅ 算法选择界面和实时预览
-- ✅ 浅度睡眠模式（WiFi Modem Sleep，降低功耗至20-30mA）
+- ✅ Deep-sleep + 按键/定时唤醒（低功耗）
 
 ### 可扩展功能
 
@@ -527,6 +407,4 @@ MQTT服务器: 8.135.238.216:1883
 
 - [ESP32-C3技术参考手册](https://www.espressif.com/sites/default/files/documentation/esp32-c3_technical_reference_manual_cn.pdf)
 - [合宙ESP32C3-CORE开发板](https://wiki.luatos.com/chips/esp32c3/board.html)
-- [PubSubClient库文档](https://pubsubclient.knolleary.net/)
 - [ArduinoJson文档](https://arduinojson.org/)
-- [EMQX文档](https://www.emqx.io/docs/)

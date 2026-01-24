@@ -178,7 +178,39 @@ function renderDevices() {
     
     devices.forEach(device => {
         const status = deviceStatus[device.id] || {};
-        const isOnline = status.online && (Date.now() - status.lastSeen < 60000);
+        const isSleeping = status.sleeping === true;  // 明确检查是否为true
+        // 如果设备处于睡眠状态，直接使用后端返回的online状态（后端已正确处理）
+        // 否则检查lastSeen时间
+        const isOnline = isSleeping ? (status.online === true) : (status.online === true && (Date.now() - (status.lastSeen || 0) < 60000));
+        
+        // 调试：打印状态判断
+        if (isSleeping || device.id === '096D88') {  // 临时调试特定设备
+            console.log(`[渲染] 设备 ${device.id}:`, {
+                isSleeping,
+                isOnline,
+                statusOnline: status.online,
+                statusSleeping: status.sleeping,
+                lastSeen: status.lastSeen,
+                now: Date.now(),
+                diff: Date.now() - (status.lastSeen || 0)
+            });
+        }
+        
+        // 确定显示状态：睡眠 > 在线 > 离线
+        let statusText, statusColor, statusClass;
+        if (isSleeping) {
+            statusText = '睡眠';
+            statusColor = '#ffc107';  // 黄色表示睡眠
+            statusClass = 'status-sleeping';
+        } else if (isOnline) {
+            statusText = '在线';
+            statusColor = '#28a745';  // 绿色表示在线
+            statusClass = 'status-online';
+        } else {
+            statusText = '离线';
+            statusColor = '#dc3545';  // 红色表示离线
+            statusClass = 'status-offline';
+        }
         
         const card = document.createElement('div');
         card.className = 'device-card';
@@ -186,9 +218,9 @@ function renderDevices() {
         
         card.innerHTML = `
             <div class="device-status">
-                <span class="status-dot ${isOnline ? 'status-online' : 'status-offline'}"></span>
-                <span style="color: ${isOnline ? '#28a745' : '#dc3545'}">
-                    ${isOnline ? '在线' : '离线'}
+                <span class="status-dot ${statusClass}"></span>
+                <span style="color: ${statusColor}">
+                    ${statusText}
                 </span>
             </div>
             
@@ -200,7 +232,16 @@ function renderDevices() {
                     <span class="device-info-value">${device.id}</span>
                 </div>
                 
-                ${isOnline ? `
+                ${isSleeping ? `
+                    <div class="device-info-item">
+                        <span class="device-info-label">状态</span>
+                        <span class="device-info-value" style="color: #ffc107;">💤 Deep-sleep 模式</span>
+                    </div>
+                    <div class="device-info-item">
+                        <span class="device-info-label">说明</span>
+                        <span class="device-info-value" style="color: #666; font-size: 0.85em;">按键或定时唤醒后自动更新</span>
+                    </div>
+                ` : isOnline ? `
                     <div class="device-info-item">
                         <span class="device-info-label">IP地址</span>
                         <span class="device-info-value">${status.ip || '-'}</span>
@@ -253,41 +294,95 @@ function openDevice(deviceId) {
 }
 
 // HTTP轮询
+let pollingInterval = null;
+let isPolling = false;  // 防止并发请求
+
 function startPolling() {
     // 立即执行一次
     pollDeviceStatus();
     
-    // 每5秒轮询一次
-    setInterval(pollDeviceStatus, 5000);
+    // 每2秒轮询一次（从5秒优化为2秒，提升响应速度）
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+    }
+    pollingInterval = setInterval(pollDeviceStatus, 2000);
+}
+
+function stopPolling() {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+    }
 }
 
 async function pollDeviceStatus() {
+    // 防止并发请求
+    if (isPolling) {
+        return;
+    }
+    
+    isPolling = true;
     try {
         const response = await fetch(`${API_BASE}/api/devices`, {
             headers: {
                 ...authHeaders()
-            }
+            },
+            cache: 'no-cache'  // 禁用缓存，确保获取最新状态
         });
         if (response.ok) {
             const result = await response.json();
             if (result.success && result.devices) {
                 // 更新设备状态
+                let hasChanges = false;
                 result.devices.forEach(device => {
-                    deviceStatus[device.deviceId] = {
+                    const oldStatus = deviceStatus[device.deviceId];
+                    const newStatus = {
                         online: device.online !== undefined ? device.online : true,
+                        sleeping: device.sleeping !== undefined ? device.sleeping : false,  // 保存睡眠状态
                         rssi: device.rssi,
                         ip: device.ip,
                         uptime_ms: device.uptime_ms,
                         freeHeap: device.freeHeap,
                         lastSeen: device.lastSeen || Date.now()
                     };
+                    
+                    // 调试：打印睡眠设备的状态
+                    if (newStatus.sleeping || (oldStatus && oldStatus.sleeping)) {
+                        console.log(`[设备状态] ${device.deviceId}:`, {
+                            online: newStatus.online,
+                            sleeping: newStatus.sleeping,
+                            lastSeen: newStatus.lastSeen,
+                            oldSleeping: oldStatus ? oldStatus.sleeping : 'N/A',
+                            deviceData: device
+                        });
+                    }
+                    
+                    // 检查是否有变化，避免不必要的重渲染
+                    // 注意：sleeping状态变化必须触发重渲染，因为会影响显示
+                    if (!oldStatus || 
+                        oldStatus.online !== newStatus.online ||
+                        oldStatus.sleeping !== newStatus.sleeping ||  // 检查睡眠状态变化
+                        oldStatus.lastSeen !== newStatus.lastSeen ||  // lastSeen变化也可能影响状态
+                        oldStatus.rssi !== newStatus.rssi ||
+                        oldStatus.ip !== newStatus.ip ||
+                        oldStatus.uptime_ms !== newStatus.uptime_ms ||
+                        oldStatus.freeHeap !== newStatus.freeHeap) {
+                        hasChanges = true;
+                    }
+                    
+                    deviceStatus[device.deviceId] = newStatus;
                 });
                 
-                renderDevices();
+                // 只在有变化时重新渲染，提升性能
+                if (hasChanges) {
+                    renderDevices();
+                }
             }
         }
     } catch (e) {
         console.error('轮询失败:', e);
+    } finally {
+        isPolling = false;
     }
 }
 

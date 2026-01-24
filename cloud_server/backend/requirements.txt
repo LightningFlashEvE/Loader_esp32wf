@@ -2,7 +2,7 @@ flask==3.0.0
 flask-cors==4.0.0
 # 不固定 pymongo 具体小版本，避免镜像源缺少 4.6.1 导致构建失败
 pymongo
-paho-mqtt==1.6.1
+# paho-mqtt 已移除，本架构使用 HTTP 拉取模式，不需要 MQTT
 python-dotenv==1.0.0
 gunicorn==21.2.0
 numpy==1.26.4

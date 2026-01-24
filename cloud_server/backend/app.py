@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 ESP32 E-Paper Cloud Server - Flask Backend
+Deep-sleep + HTTP Pull Architecture (无MQTT版本)
+
+设备通过HTTP拉取更新，服务器持久化保存图片数据
 """
 
 import os
@@ -12,12 +15,12 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
-import paho.mqtt.client as mqtt
 import tempfile
 import io
 
@@ -39,10 +42,43 @@ pages_collection = None
 page_lists_collection = None
 pairing_codes_collection = None
 
-# ==================== 临时图像数据存储 ====================
-# 用于存储待下载的图像数据（设备ID -> 数据字符串）
-image_data_cache = {}
-image_data_lock = threading.Lock()
+# ==================== 图片持久化存储目录 ====================
+# 图片数据保存在 data/epd/<deviceId>/latest.txt
+DATA_DIR = Path(__file__).parent / 'data' / 'epd'
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_device_data_dir(device_id: str) -> Path:
+    """获取设备数据目录"""
+    device_dir = DATA_DIR / device_id.upper()
+    device_dir.mkdir(parents=True, exist_ok=True)
+    return device_dir
+
+def get_device_image_path(device_id: str) -> Path:
+    """获取设备最新图片文件路径"""
+    return get_device_data_dir(device_id) / 'latest.txt'
+
+def save_device_image(device_id: str, image_data: str) -> bool:
+    """保存设备图片数据到磁盘"""
+    try:
+        image_path = get_device_image_path(device_id)
+        with open(image_path, 'w', encoding='utf-8') as f:
+            f.write(image_data)
+        print(f'💾 图片已保存: {image_path} ({len(image_data)} 字符)')
+        return True
+    except Exception as e:
+        print(f'❌ 保存图片失败: {e}')
+        return False
+
+def load_device_image(device_id: str) -> str:
+    """从磁盘加载设备图片数据"""
+    try:
+        image_path = get_device_image_path(device_id)
+        if image_path.exists():
+            with open(image_path, 'r', encoding='utf-8') as f:
+                return f.read()
+    except Exception as e:
+        print(f'❌ 加载图片失败: {e}')
+    return None
 
 def connect_mongodb():
     """连接 MongoDB"""
@@ -66,7 +102,7 @@ def connect_mongodb():
 
         devices_collection.create_index('deviceId', unique=True)
         devices_collection.create_index('owner')
-        devices_collection.create_index('claimed')  # 绑定状态索引
+        devices_collection.create_index('claimed')
 
         device_status_collection.create_index('deviceId', unique=True)
         device_status_collection.create_index('lastSeen')
@@ -77,9 +113,8 @@ def connect_mongodb():
         page_lists_collection.create_index('deviceId')
         page_lists_collection.create_index([('deviceId', 1), ('isActive', 1)])
         
-        # 配对码集合索引：deviceId唯一索引，expiresAt的TTL索引（自动过期清理）
         pairing_codes_collection.create_index('deviceId', unique=True)
-        pairing_codes_collection.create_index('expiresAt', expireAfterSeconds=0)  # TTL索引，0秒后过期
+        pairing_codes_collection.create_index('expiresAt', expireAfterSeconds=0)
         
         print(f'✅ Connected to MongoDB: {Config.MONGODB_URI}')
         print(f'📊 Database: {Config.MONGODB_DB}')
@@ -88,10 +123,6 @@ def connect_mongodb():
         print(f'❌ MongoDB connection error: {e}')
         print('⚠️  Server will continue with in-memory storage')
         return False
-
-# ==================== MQTT 连接 ====================
-mqtt_client = None
-online_devices = {}  # 内存缓存
 
 # ==================== 用户认证工具函数 ====================
 
@@ -124,10 +155,18 @@ def login_required(f):
         user = get_current_user()
         if not user:
             return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-        # 将用户对象挂到 request 上，后续处理使用
         request.user = user
         return f(*args, **kwargs)
     return wrapper
+
+def normalize_device_id(device_id: str) -> str:
+    """统一规范化 deviceId：去掉分隔符并转大写。
+
+    设备端/前端可能传入带 '-' ':' 或小写的 ID；数据库里统一存 clean uppercase。
+    """
+    if not device_id:
+        return ''
+    return (device_id or '').strip().upper().replace('-', '').replace(':', '')
 
 def ensure_device_owner(device_id: str, user) -> bool:
     """检查设备是否属于当前用户"""
@@ -136,7 +175,8 @@ def ensure_device_owner(device_id: str, user) -> bool:
     owner = user.get('username')
     if not owner:
         return False
-    device = devices_collection.find_one({'deviceId': device_id, 'owner': owner})
+    clean_id = normalize_device_id(device_id)
+    device = devices_collection.find_one({'deviceId': clean_id, 'owner': owner})
     return device is not None
 
 # ==================== API: 用户注册 / 登录 ====================
@@ -227,88 +267,6 @@ def me():
         }
     })
 
-def on_mqtt_connect(client, userdata, flags, rc):
-    """MQTT 连接回调"""
-    if rc == 0:
-        print(f'✅ Connected to MQTT broker: {Config.MQTT_BROKER}:{Config.MQTT_PORT}')
-        # 订阅所有设备的上行消息
-        client.subscribe('dev/+/up/#')
-        print('✅ Subscribed to: dev/+/up/#')
-    else:
-        print(f'❌ MQTT connection failed with code {rc}')
-
-def on_mqtt_message(client, userdata, msg):
-    """MQTT 消息回调"""
-    topic = msg.topic
-    print(f'📥 MQTT message received: {topic}')
-    
-    try:
-        payload = json.loads(msg.payload.decode('utf-8'))
-        print(f'   Data: {payload}')
-        
-        # 解析设备ID
-        parts = topic.split('/')
-        if len(parts) >= 2 and parts[0] == 'dev':
-            device_id = parts[1]
-            status_data = {
-                **payload,
-                'lastSeen': int(time.time() * 1000)
-            }
-            
-            # 更新内存缓存
-            online_devices[device_id] = status_data
-            
-            # 更新数据库
-            if device_status_collection is not None:
-                try:
-                    device_status_collection.update_one(
-                        {'deviceId': device_id},
-                        {'$set': {
-                            **status_data,
-                            'updatedAt': datetime.utcnow()
-                        }},
-                        upsert=True
-                    )
-                except Exception as e:
-                    print(f'❌ Failed to update device status in DB: {e}')
-    except json.JSONDecodeError:
-        print(f'   Raw: {msg.payload.decode("utf-8")}')
-    except Exception as e:
-        print(f'❌ Error processing message: {e}')
-
-def connect_mqtt():
-    """连接 MQTT Broker"""
-    global mqtt_client
-    try:
-        mqtt_client = mqtt.Client(
-            client_id=f'cloud-server-{os.urandom(4).hex()}'
-        )
-        mqtt_client.username_pw_set(Config.MQTT_USER, Config.MQTT_PASS)
-        mqtt_client.on_connect = on_mqtt_connect
-        mqtt_client.on_message = on_mqtt_message
-        
-        mqtt_client.connect(Config.MQTT_BROKER, Config.MQTT_PORT, keepalive=60)
-        mqtt_client.loop_start()  # 启动后台线程处理 MQTT
-        return True
-    except Exception as e:
-        print(f'❌ MQTT connection error: {e}')
-        return False
-
-def publish_mqtt(topic, payload):
-    """发布 MQTT 消息"""
-    if mqtt_client is None:
-        return False, 'MQTT not connected'
-    
-    try:
-        payload_str = json.dumps(payload)
-        result = mqtt_client.publish(topic, payload_str, qos=1)
-        if result.rc == 0:
-            return True, None
-        else:
-            return False, f'Publish failed with code {result.rc}'
-    except Exception as e:
-        return False, str(e)
-
 # ==================== API: 设备管理 ====================
 
 @app.route('/api/devices/list', methods=['GET'])
@@ -345,10 +303,8 @@ def add_device():
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
         
-        # 清理设备ID（去掉分隔符）
         clean_id = device_id.replace('-', '').replace(':', '')
         
-        # 验证格式（6位或12位十六进制）
         import re
         if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
             return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
@@ -356,12 +312,12 @@ def add_device():
         if devices_collection is None or not owner:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        # 添加设备（自动绑定）
         device = {
             'deviceId': clean_id,
             'deviceName': device_name or clean_id,
             'owner': owner,
-            'claimed': True,  # 添加设备时自动绑定
+            'claimed': True,
+            'imageVersion': 0,
             'addedAt': datetime.utcnow(),
             'createdAt': datetime.utcnow(),
             'updatedAt': datetime.utcnow()
@@ -369,11 +325,9 @@ def add_device():
         
         try:
             devices_collection.insert_one(device)
-            # 删除可能存在的配对码
             if pairing_codes_collection is not None:
                 pairing_codes_collection.delete_one({'deviceId': clean_id})
         except DuplicateKeyError:
-            # 如果设备已存在，更新为已绑定状态
             devices_collection.update_one(
                 {'deviceId': clean_id},
                 {
@@ -385,14 +339,11 @@ def add_device():
                     }
                 }
             )
-            # 删除可能存在的配对码
             if pairing_codes_collection is not None:
                 pairing_codes_collection.delete_one({'deviceId': clean_id})
         
         print(f'✅ Device added: {clean_id}')
-        # 返回时去掉 _id
         device.pop('_id', None)
-        # 转换日期为字符串
         device['addedAt'] = device['addedAt'].isoformat()
         device['createdAt'] = device['createdAt'].isoformat()
         device['updatedAt'] = device['updatedAt'].isoformat()
@@ -418,12 +369,8 @@ def delete_device(device_id):
         if result.deleted_count == 0:
             return jsonify({'success': False, 'error': 'Device not found'}), 404
         
-        # 同时删除设备状态
         if device_status_collection is not None:
             device_status_collection.delete_one({'deviceId': device_id})
-        
-        # 从内存缓存中删除
-        online_devices.pop(device_id, None)
         
         print(f'✅ Device deleted: {device_id}')
         return jsonify({'success': True, 'message': 'Device deleted'})
@@ -439,31 +386,34 @@ def get_devices_status():
         user = getattr(request, 'user', None)
         owner = user.get('username') if user else None
 
-        # 从数据库获取所有已注册的设备
         registered_devices = []
         if devices_collection is not None and owner:
             registered_devices = list(
                 devices_collection.find({'owner': owner}, {'_id': 0})
             )
         
-        # 合并在线状态
-        current_time = int(time.time() * 1000)
         devices = []
         for device in registered_devices:
             device_id = device['deviceId']
-            status = online_devices.get(device_id)
-            is_online = status and (current_time - status.get('lastSeen', 0) < 60000)
             
             device_info = {
                 'deviceId': device_id,
                 'deviceName': device.get('deviceName', device_id),
                 'addedAt': device.get('addedAt').isoformat() if hasattr(device.get('addedAt'), 'isoformat') else device.get('addedAt'),
-                'online': is_online,
-                'claimed': device.get('claimed', False)  # 添加绑定状态
+                'online': False,  # Deep-sleep架构下设备通常离线
+                'claimed': device.get('claimed', False),
+                'imageVersion': device.get('imageVersion', 0)
             }
             
-            if status:
-                device_info.update(status)
+            # 检查设备最后活动时间
+            if device_status_collection is not None:
+                status = device_status_collection.find_one({'deviceId': device_id})
+                if status:
+                    last_seen = status.get('lastSeen', 0)
+                    current_time = int(time.time() * 1000)
+                    # Deep-sleep架构：最近5分钟内有活动则认为在线
+                    device_info['online'] = (current_time - last_seen < 300000)
+                    device_info['lastSeen'] = last_seen
             
             devices.append(device_info)
         
@@ -476,7 +426,14 @@ def get_devices_status():
 
 @app.route('/api/device/status', methods=['POST'])
 def device_status():
-    """设备查询绑定状态（无需登录，设备调用）"""
+    """设备查询绑定状态（无需登录，设备调用）
+    
+    返回：
+    - claimed: 是否已绑定
+    - imageVersion: 最新图片版本号
+    - imageUrl: 图片下载URL（仅已绑定且有图片时返回）
+    - pairingCode: 配对码（仅未绑定时返回）
+    """
     try:
         data = request.get_json() or {}
         device_id = (data.get('deviceId') or '').strip().upper()
@@ -484,28 +441,51 @@ def device_status():
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
         
-        # 清理设备ID（去掉分隔符）
         clean_id = device_id.replace('-', '').replace(':', '')
         
-        # 验证格式
         import re
         if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
             return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
         
+        # 更新设备最后活动时间
+        if device_status_collection is not None:
+            device_status_collection.update_one(
+                {'deviceId': clean_id},
+                {'$set': {
+                    'lastSeen': int(time.time() * 1000),
+                    'updatedAt': datetime.utcnow()
+                }},
+                upsert=True
+            )
+        
         if devices_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        # 查询设备绑定状态
         device = devices_collection.find_one({'deviceId': clean_id})
         claimed = device is not None and device.get('claimed', False)
         
         response = {
+            'success': True,
+            'deviceId': clean_id,
             'claimed': claimed
         }
         
-        # 如果未绑定，生成或返回配对码
-        if not claimed:
-            # 检查是否已有有效的配对码
+        if claimed and device:
+            # 已绑定：返回图片版本和下载URL
+            image_version = device.get('imageVersion', 0)
+            response['imageVersion'] = image_version
+            
+            # 检查是否有持久化的图片
+            image_path = get_device_image_path(clean_id)
+            if image_path.exists() and image_version > 0:
+                # 构建稳定的下载URL
+                response['imageUrl'] = f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/raw/{clean_id}?v={image_version}'
+            
+            print(f'📊 设备 {clean_id} 查询状态: claimed=True, imageVersion={image_version}')
+        else:
+            # 未绑定：生成或返回配对码
+            response['imageVersion'] = 0
+            
             pairing_code = None
             expires_at = None
             
@@ -515,14 +495,11 @@ def device_status():
                     pairing_code = pairing_doc.get('code')
                     expires_at = pairing_doc.get('expiresAt')
             
-            # 如果没有有效配对码，生成新的
             if not pairing_code or (expires_at and expires_at < datetime.utcnow()):
-                # 生成6位数字配对码
                 import random
                 pairing_code = f"{random.randint(100000, 999999)}"
-                expires_at = datetime.utcnow() + timedelta(hours=24)  # 24小时有效期
+                expires_at = datetime.utcnow() + timedelta(hours=24)
                 
-                # 保存配对码
                 if pairing_codes_collection is not None:
                     pairing_codes_collection.update_one(
                         {'deviceId': clean_id},
@@ -536,30 +513,17 @@ def device_status():
                         upsert=True
                     )
             
-            # 计算剩余有效期（秒）
             if expires_at:
                 expires_in = int((expires_at - datetime.utcnow()).total_seconds())
                 if expires_in < 0:
                     expires_in = 0
             else:
-                expires_in = 86400  # 默认24小时
+                expires_in = 86400
             
             response['pairingCode'] = pairing_code
             response['expiresIn'] = expires_in
-        
-        # 如果已绑定，返回图片信息（如果有）
-        if claimed and device:
-            # 可以在这里添加图片URL和版本信息
-            # 例如从pages_collection获取最新图片
-            if pages_collection is not None:
-                latest_page = pages_collection.find_one(
-                    {'deviceId': clean_id},
-                    sort=[('updatedAt', -1)]
-                )
-                if latest_page:
-                    # 这里可以根据实际需求返回图片URL
-                    # response['imageUrl'] = latest_page.get('imageUrl')
-                    response['imageVersion'] = latest_page.get('version', 0)
+            
+            print(f'📊 设备 {clean_id} 查询状态: claimed=False, pairingCode={pairing_code}')
         
         return jsonify(response)
     except Exception as e:
@@ -581,15 +545,13 @@ def device_claim():
         
         data = request.get_json() or {}
         device_id = (data.get('deviceId') or '').strip().upper()
-        pairing_code = (data.get('pairingCode') or '').strip()  # 可选：配对码验证
+        pairing_code = (data.get('pairingCode') or '').strip()
         
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
         
-        # 清理设备ID
         clean_id = device_id.replace('-', '').replace(':', '')
         
-        # 验证格式
         import re
         if not re.match(r'^[0-9A-F]{6}$|^[0-9A-F]{12}$', clean_id):
             return jsonify({'success': False, 'error': 'Invalid deviceId format'}), 400
@@ -597,7 +559,6 @@ def device_claim():
         if devices_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        # 验证配对码（如果提供了）
         if pairing_code:
             if pairing_codes_collection is None:
                 return jsonify({'success': False, 'error': 'Pairing code verification unavailable'}), 500
@@ -609,12 +570,10 @@ def device_claim():
             if pairing_doc.get('code') != pairing_code:
                 return jsonify({'success': False, 'error': 'Invalid pairing code'}), 400
             
-            # 检查是否过期
             expires_at = pairing_doc.get('expiresAt')
             if expires_at and expires_at < datetime.utcnow():
                 return jsonify({'success': False, 'error': 'Pairing code expired'}), 400
         
-        # 检查设备是否已被其他用户绑定
         existing_device = devices_collection.find_one({'deviceId': clean_id})
         if existing_device:
             existing_owner = existing_device.get('owner')
@@ -623,39 +582,25 @@ def device_claim():
             if existing_claimed and existing_owner != owner:
                 return jsonify({'success': False, 'error': 'Device already claimed by another user'}), 403
             
-            # 如果是同一用户，更新绑定状态
-            if existing_owner == owner:
-                devices_collection.update_one(
-                    {'deviceId': clean_id},
-                    {
-                        '$set': {
-                            'claimed': True,
-                            'updatedAt': datetime.utcnow()
-                        }
+            devices_collection.update_one(
+                {'deviceId': clean_id},
+                {
+                    '$set': {
+                        'owner': owner,
+                        'claimed': True,
+                        'updatedAt': datetime.utcnow()
                     }
-                )
-                print(f'✅ Device re-claimed: {clean_id} by {owner}')
-            else:
-                # 更新所有者
-                devices_collection.update_one(
-                    {'deviceId': clean_id},
-                    {
-                        '$set': {
-                            'owner': owner,
-                            'claimed': True,
-                            'updatedAt': datetime.utcnow()
-                        }
-                    }
-                )
-                print(f'✅ Device claimed: {clean_id} by {owner}')
+                }
+            )
+            print(f'✅ Device claimed: {clean_id} by {owner}')
         else:
-            # 新设备，创建记录
             device_name = data.get('deviceName', '').strip() or clean_id
             device = {
                 'deviceId': clean_id,
                 'deviceName': device_name,
                 'owner': owner,
                 'claimed': True,
+                'imageVersion': 0,
                 'addedAt': datetime.utcnow(),
                 'createdAt': datetime.utcnow(),
                 'updatedAt': datetime.utcnow()
@@ -663,7 +608,6 @@ def device_claim():
             devices_collection.insert_one(device)
             print(f'✅ New device claimed: {clean_id} by {owner}')
         
-        # 删除配对码（已使用）
         if pairing_codes_collection is not None:
             pairing_codes_collection.delete_one({'deviceId': clean_id})
         
@@ -697,18 +641,15 @@ def device_unbind():
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
         
-        # 清理设备ID
         clean_id = device_id.replace('-', '').replace(':', '')
         
         if devices_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
         
-        # 检查设备是否存在且属于当前用户
         device = devices_collection.find_one({'deviceId': clean_id, 'owner': owner})
         if not device:
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 404
         
-        # 解绑设备（设置claimed为False，但不删除设备记录）
         devices_collection.update_one(
             {'deviceId': clean_id},
             {
@@ -719,7 +660,6 @@ def device_unbind():
             }
         )
         
-        # 删除配对码（如果有）
         if pairing_codes_collection is not None:
             pairing_codes_collection.delete_one({'deviceId': clean_id})
         
@@ -741,21 +681,21 @@ def device_unbind():
 @app.route('/api/pages/list/<device_id>', methods=['GET'])
 @login_required
 def get_pages(device_id):
-    """获取设备的所有页面（仅限当前用户的设备）"""
+    """获取设备的所有页面"""
     try:
         user = getattr(request, 'user', None)
-        if not ensure_device_owner(device_id, user):
+        clean_id = normalize_device_id(device_id)
+        if not ensure_device_owner(clean_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
 
         if pages_collection is None:
             return jsonify({'success': True, 'pages': []})
         
         pages = list(pages_collection.find(
-            {'deviceId': device_id}, 
+            {'deviceId': clean_id},
             {'_id': 0}
         ).sort('updatedAt', -1))
         
-        # 转换日期
         for page in pages:
             if hasattr(page.get('createdAt'), 'isoformat'):
                 page['createdAt'] = page['createdAt'].isoformat()
@@ -770,15 +710,15 @@ def get_pages(device_id):
 @app.route('/api/pages/save', methods=['POST'])
 @login_required
 def save_page():
-    """保存页面（仅限当前用户的设备）"""
+    """保存页面"""
     try:
         data = request.get_json()
         device_id = data.get('deviceId')
         page_id = data.get('pageId')
         page_name = data.get('name', '未命名页面')
-        page_type = data.get('type', 'custom')  # custom, image, text, mixed, template
-        page_data = data.get('data', {})  # 页面内容数据
-        thumbnail = data.get('thumbnail', '')  # 缩略图 base64
+        page_type = data.get('type', 'custom')
+        page_data = data.get('data', {})
+        thumbnail = data.get('thumbnail', '')
         
         if not device_id:
             return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
@@ -793,7 +733,6 @@ def save_page():
         now = datetime.utcnow()
         
         if page_id:
-            # 更新现有页面
             result = pages_collection.update_one(
                 {'pageId': page_id, 'deviceId': device_id},
                 {'$set': {
@@ -809,7 +748,6 @@ def save_page():
             
             print(f'✅ Page updated: {page_id}')
         else:
-            # 创建新页面
             import uuid
             page_id = str(uuid.uuid4())[:8]
             
@@ -838,7 +776,7 @@ def save_page():
 @app.route('/api/pages/<page_id>', methods=['GET'])
 @login_required
 def get_page(page_id):
-    """获取单个页面详情（仅限当前用户的设备）"""
+    """获取单个页面详情"""
     try:
         if pages_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
@@ -847,13 +785,11 @@ def get_page(page_id):
         if not page:
             return jsonify({'success': False, 'error': 'Page not found'}), 404
 
-        # 校验设备归属
         user = getattr(request, 'user', None)
         device_id = page.get('deviceId')
         if device_id and not ensure_device_owner(device_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
         
-        # 转换日期
         if hasattr(page.get('createdAt'), 'isoformat'):
             page['createdAt'] = page['createdAt'].isoformat()
         if hasattr(page.get('updatedAt'), 'isoformat'):
@@ -867,12 +803,11 @@ def get_page(page_id):
 @app.route('/api/pages/<page_id>', methods=['DELETE'])
 @login_required
 def delete_page(page_id):
-    """删除页面（仅限当前用户的设备）"""
+    """删除页面"""
     try:
         if pages_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
 
-        # 先找到页面，检查归属
         page = pages_collection.find_one({'pageId': page_id})
         if not page:
             return jsonify({'success': False, 'error': 'Page not found'}), 404
@@ -884,7 +819,6 @@ def delete_page(page_id):
 
         result = pages_collection.delete_one({'pageId': page_id})
         
-        # 从所有页面列表中移除该页面
         if page_lists_collection is not None:
             page_lists_collection.update_many(
                 {},
@@ -902,21 +836,21 @@ def delete_page(page_id):
 @app.route('/api/page-lists/list/<device_id>', methods=['GET'])
 @login_required
 def get_page_lists(device_id):
-    """获取设备的所有页面列表（仅限当前用户的设备）"""
+    """获取设备的所有页面列表"""
     try:
         user = getattr(request, 'user', None)
-        if not ensure_device_owner(device_id, user):
+        clean_id = normalize_device_id(device_id)
+        if not ensure_device_owner(clean_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
 
         if page_lists_collection is None:
             return jsonify({'success': True, 'pageLists': []})
         
         page_lists = list(page_lists_collection.find(
-            {'deviceId': device_id}, 
+            {'deviceId': clean_id},
             {'_id': 0}
         ).sort('updatedAt', -1))
         
-        # 转换日期
         for pl in page_lists:
             if hasattr(pl.get('createdAt'), 'isoformat'):
                 pl['createdAt'] = pl['createdAt'].isoformat()
@@ -931,14 +865,14 @@ def get_page_lists(device_id):
 @app.route('/api/page-lists/save', methods=['POST'])
 @login_required
 def save_page_list():
-    """保存页面列表（仅限当前用户的设备）"""
+    """保存页面列表"""
     try:
         data = request.get_json()
         device_id = data.get('deviceId')
         list_id = data.get('listId')
         list_name = data.get('name', '默认页面列表')
-        pages = data.get('pages', [])  # [{pageId, order}]
-        interval = data.get('interval', 60)  # 切换间隔(分钟)
+        pages = data.get('pages', [])
+        interval = data.get('interval', 60)
         is_active = data.get('isActive', False)
         
         if not device_id:
@@ -953,7 +887,6 @@ def save_page_list():
         
         now = datetime.utcnow()
         
-        # 如果设置为激活，先取消其他列表的激活状态
         if is_active:
             page_lists_collection.update_many(
                 {'deviceId': device_id},
@@ -961,7 +894,6 @@ def save_page_list():
             )
         
         if list_id:
-            # 更新现有列表
             result = page_lists_collection.update_one(
                 {'listId': list_id, 'deviceId': device_id},
                 {'$set': {
@@ -977,7 +909,6 @@ def save_page_list():
             
             print(f'✅ Page list updated: {list_id}')
         else:
-            # 创建新列表
             import uuid
             list_id = str(uuid.uuid4())[:8]
             
@@ -1006,12 +937,11 @@ def save_page_list():
 @app.route('/api/page-lists/<list_id>', methods=['DELETE'])
 @login_required
 def delete_page_list(list_id):
-    """删除页面列表（仅限当前用户的设备）"""
+    """删除页面列表"""
     try:
         if page_lists_collection is None:
             return jsonify({'success': False, 'error': 'Database not connected'}), 500
 
-        # 找到列表，检查归属
         page_list = page_lists_collection.find_one({'listId': list_id})
         if not page_list:
             return jsonify({'success': False, 'error': 'Page list not found'}), 404
@@ -1032,17 +962,18 @@ def delete_page_list(list_id):
 @app.route('/api/page-lists/active/<device_id>', methods=['GET'])
 @login_required
 def get_active_page_list(device_id):
-    """获取设备当前激活的页面列表（仅限当前用户的设备）"""
+    """获取设备当前激活的页面列表"""
     try:
         user = getattr(request, 'user', None)
-        if not ensure_device_owner(device_id, user):
+        clean_id = normalize_device_id(device_id)
+        if not ensure_device_owner(clean_id, user):
             return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
 
         if page_lists_collection is None:
             return jsonify({'success': True, 'pageList': None})
         
         page_list = page_lists_collection.find_one(
-            {'deviceId': device_id, 'isActive': True},
+            {'deviceId': clean_id, 'isActive': True},
             {'_id': 0}
         )
         
@@ -1175,17 +1106,16 @@ def get_template(template_id):
         return jsonify({'success': False, 'error': 'Template not found'}), 404
     return jsonify({'success': True, 'template': template})
 
-# ==================== API: EPD 控制 ====================
+# ==================== API: EPD 控制（HTTP拉取架构） ====================
 
 @app.route('/api/epd/init', methods=['POST'])
 @login_required
 def epd_init():
-    """初始化 EPD（仅限当前用户的设备）"""
+    """初始化 EPD（Deep-sleep架构下此接口仅用于记录，不直接控制设备）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     epd_type = data.get('epdType')
     
-    # 检查deviceId和epdType（epdType可以是0，所以不能直接用not判断）
     if not device_id or epd_type is None:
         return jsonify({'success': False, 'error': 'Missing deviceId or epdType'}), 400
 
@@ -1193,29 +1123,17 @@ def epd_init():
     if not ensure_device_owner(device_id, user):
         return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
-    topic = f'dev/{device_id}/down/epd'
-    payload = {
-        'cmd': 'EPD',
-        'type': epd_type,
-        'timestamp': int(time.time() * 1000)
-    }
-    
-    success, error = publish_mqtt(topic, payload)
-    if success:
-        print(f'✅ EPD init sent to {device_id}')
-        return jsonify({'success': True, 'message': 'EPD init command sent'})
-    else:
-        print(f'❌ Publish error: {error}')
-        return jsonify({'success': False, 'error': error}), 500
+    clean_id = normalize_device_id(device_id)
+    print(f'📱 EPD init recorded for {clean_id}, type={epd_type}')
+    return jsonify({'success': True, 'message': 'EPD init recorded (device will apply on next wake)'})
 
 @app.route('/api/epd/load', methods=['POST'])
 @login_required
 def epd_load():
-    """加载图片数据（仅限当前用户的设备）- 使用HTTP下载方式"""
+    """上传图片数据（持久化保存，设备下次唤醒时拉取）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     image_data = data.get('data')
-    length = data.get('length')
     
     if not device_id or not image_data:
         return jsonify({'success': False, 'error': 'Missing deviceId or data'}), 400
@@ -1224,132 +1142,84 @@ def epd_load():
     if not ensure_device_owner(device_id, user):
         return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
-    # 数据太大，无法通过MQTT传输，改用HTTP下载
-    # 将数据保存到临时缓存
-    with image_data_lock:
-        image_data_cache[device_id] = image_data
-        print(f'📦 图像数据已缓存: {device_id} - size: {len(image_data)} 字符')
+    clean_id = normalize_device_id(device_id)
     
-    # 构建下载URL（使用设备ID和随机token防止未授权访问）
-    download_token = secrets.token_urlsafe(16)
-    download_url = f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/download/{device_id}?token={download_token}'
+    # 持久化保存图片数据
+    if not save_device_image(clean_id, image_data):
+        return jsonify({'success': False, 'error': 'Failed to save image'}), 500
     
-    # 发送DOWNLOAD命令（通过MQTT）
-    topic = f'dev/{device_id}/down/epd'
-    payload = {
-        'cmd': 'DOWNLOAD',
-        'url': download_url,
-        'timestamp': int(time.time() * 1000)
-    }
-    
-    success, error = publish_mqtt(topic, payload)
-    if success:
-        print(f'✅ DOWNLOAD命令已发送到 {device_id} - URL: {download_url[:50]}...')
-        return jsonify({'success': True, 'message': 'Download command sent', 'url': download_url})
-    else:
-        print(f'❌ Publish error: {error}')
-        # 清理缓存
-        with image_data_lock:
-            image_data_cache.pop(device_id, None)
-        return jsonify({'success': False, 'error': error}), 500
-
-@app.route('/api/epd/download/<device_id>', methods=['GET'])
-def epd_download(device_id):
-    """下载图像数据（ESP32通过HTTP下载）"""
-    # 从缓存中获取数据
-    with image_data_lock:
-        if device_id not in image_data_cache:
-            return jsonify({'error': 'Data not found or expired'}), 404
+    # 更新图片版本号（递增）
+    if devices_collection is not None:
+        device = devices_collection.find_one({'deviceId': clean_id})
+        current_version = device.get('imageVersion', 0) if device else 0
+        new_version = current_version + 1
         
-        image_data = image_data_cache[device_id]
-        # 下载后立即删除缓存（一次性使用）
-        del image_data_cache[device_id]
+        result = devices_collection.update_one(
+            {'deviceId': clean_id},
+            {
+                '$set': {
+                    'imageVersion': new_version,
+                    'updatedAt': datetime.utcnow()
+                }
+            }
+        )
+        
+        print(f'✅ 图片已保存: {clean_id}, 版本: {current_version} -> {new_version} '
+              f'(matched={result.matched_count}, modified={result.modified_count})')
+        print(f'   数据大小: {len(image_data)} 字符 ({len(image_data)/1024:.2f} KB)')
+        print(f'   设备下次唤醒时将自动拉取更新')
+        
+        return jsonify({
+            'success': True, 
+            'message': 'Image saved, device will update on next wake',
+            'imageVersion': new_version,
+            'imageUrl': f'http://{Config.FLASK_HOST}:{Config.FLASK_PORT}/api/epd/raw/{clean_id}?v={new_version}'
+        })
+    
+    return jsonify({'success': True, 'message': 'Image saved'})
+
+@app.route('/api/epd/raw/<device_id>', methods=['GET'])
+def epd_raw_download(device_id):
+    """下载设备的原始图片数据（ESP32通过HTTP下载）
+    
+    返回 text/plain 格式的 a~p 编码字符串
+    """
+    clean_id = normalize_device_id(device_id)
+    
+    # 从磁盘加载图片数据
+    image_data = load_device_image(clean_id)
+    
+    if not image_data:
+        print(f'❌ 图片不存在: {clean_id}')
+        return jsonify({'error': 'Image not found'}), 404
     
     data_size = len(image_data)
     data_size_bytes = len(image_data.encode('utf-8'))
-    expected_size = 384000  # 800x480 4bit格式 = 192000字节 = 384000字符
+    expected_size = 384000  # 800x480 4bit格式
     
-    print(f'📥 ESP32下载图像数据: {device_id}')
-    print(f'   数据大小: {data_size} 字符 ({data_size_bytes} 字节, {data_size_bytes/1024:.2f} KB)')
-    print(f'   期望大小: {expected_size} 字符 ({expected_size/2} 字节, {expected_size/2/1024:.2f} KB)')
+    print(f'📥 ESP32下载图片: {clean_id}')
+    print(f'   数据大小: {data_size} 字符 ({data_size_bytes/1024:.2f} KB)')
     
     if data_size != expected_size:
-        print(f'⚠️  警告：数据大小不匹配！期望 {expected_size} 字符，实际 {data_size} 字符')
-        if data_size < expected_size:
-            print(f'   缺少 {expected_size - data_size} 字符，ESP32底部将显示白色')
-        else:
-            print(f'   多出 {data_size - expected_size} 字符，ESP32将只读取前 {expected_size} 字符')
+        print(f'⚠️  数据大小不匹配: 期望 {expected_size}, 实际 {data_size}')
     
-    # 返回纯文本数据（字符串格式：'a'-'p'字符）
-    # 确保Content-Length正确，使用UTF-8编码的字节长度
-    return image_data, 200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Length': str(data_size_bytes),
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-    }
-
-@app.route('/api/epd/next', methods=['POST'])
-@login_required
-def epd_next():
-    """切换数据通道（仅限当前用户的设备）"""
-    data = request.get_json()
-    device_id = data.get('deviceId')
-    
-    if not device_id:
-        return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
-
-    user = getattr(request, 'user', None)
-    if not ensure_device_owner(device_id, user):
-        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
-    
-    topic = f'dev/{device_id}/down/epd'
-    payload = {
-        'cmd': 'NEXT',
-        'timestamp': int(time.time() * 1000)
-    }
-    
-    success, error = publish_mqtt(topic, payload)
-    if success:
-        print(f'✅ NEXT command sent to {device_id}')
-        return jsonify({'success': True, 'message': 'NEXT command sent'})
-    else:
-        print(f'❌ Publish error: {error}')
-        return jsonify({'success': False, 'error': error}), 500
-
-@app.route('/api/epd/show-device-code', methods=['POST'])
-@login_required
-def epd_show_device_code():
-    """显示设备码（仅限当前用户的设备）"""
-    data = request.get_json()
-    device_id = data.get('deviceId')
-    
-    if not device_id:
-        return jsonify({'success': False, 'error': 'Missing deviceId'}), 400
-
-    user = getattr(request, 'user', None)
-    if not ensure_device_owner(device_id, user):
-        return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
-    
-    topic = f'dev/{device_id}/down/epd'
-    payload = {
-        'cmd': 'SHOW_DEVICE_CODE',
-        'timestamp': int(time.time() * 1000)
-    }
-    
-    success, error = publish_mqtt(topic, payload)
-    if success:
-        print(f'✅ SHOW_DEVICE_CODE command sent to {device_id}')
-        return jsonify({'success': True, 'message': 'Show device code command sent'})
-    else:
-        print(f'❌ Publish error: {error}')
-        return jsonify({'success': False, 'error': error}), 500
+    # 返回纯文本数据
+    return Response(
+        image_data,
+        status=200,
+        mimetype='text/plain; charset=utf-8',
+        headers={
+            'Content-Length': str(data_size_bytes),
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+    )
 
 @app.route('/api/epd/show', methods=['POST'])
 @login_required
 def epd_show():
-    """显示图片（仅限当前用户的设备）"""
+    """触发设备显示（Deep-sleep架构下此接口仅用于记录）"""
     data = request.get_json()
     device_id = data.get('deviceId')
     
@@ -1360,42 +1230,30 @@ def epd_show():
     if not ensure_device_owner(device_id, user):
         return jsonify({'success': False, 'error': 'Device not found or no permission'}), 403
     
-    topic = f'dev/{device_id}/down/epd'
-    payload = {
-        'cmd': 'SHOW',
-        'timestamp': int(time.time() * 1000)
-    }
-    
-    success, error = publish_mqtt(topic, payload)
-    if success:
-        print(f'✅ SHOW command sent to {device_id}')
-        return jsonify({'success': True, 'message': 'SHOW command sent'})
-    else:
-        print(f'❌ Publish error: {error}')
-        return jsonify({'success': False, 'error': error}), 500
+    clean_id = normalize_device_id(device_id)
+    print(f'📺 Show command recorded for {clean_id} (device will display on next wake)')
+    return jsonify({'success': True, 'message': 'Show command recorded (device will display on next wake)'})
 
-# ==================== API: 自研3色算法处理 ====================
+# ==================== API: 自研6色算法处理 ====================
 
 @app.route('/api/epd/process-sixcolor', methods=['POST'])
 @login_required
 def process_sixcolor():
-    """使用6色算法处理图片（7.3寸E6屏，仅限当前用户的设备）"""
+    """使用6色算法处理图片（7.3寸E6屏）"""
     try:
         data = request.get_json()
         image_data = data.get('imageData')
         width = data.get('width', 800)
         height = data.get('height', 480)
-        algorithm = data.get('algorithm', 'floyd_steinberg')  # 默认使用Floyd-Steinberg
-        grad_thresh = data.get('gradThresh', 40)  # 梯度阈值，默认40
+        algorithm = data.get('algorithm', 'floyd_steinberg')
+        grad_thresh = data.get('gradThresh', 40)
         
         if not image_data:
             return jsonify({'success': False, 'error': 'Missing imageData'}), 400
         
-        # 验证算法参数
         if algorithm not in ['floyd_steinberg', 'gradient_blend', 'grayscale_color_map']:
             return jsonify({'success': False, 'error': f'Invalid algorithm: {algorithm}'}), 400
         
-        # 处理图像
         result = process_e6_image_from_base64(
             image_data,
             width,
@@ -1417,13 +1275,13 @@ def process_sixcolor():
 def health_check():
     """健康检查"""
     mongo_ok = mongo_client is not None
-    mqtt_ok = mqtt_client is not None and mqtt_client.is_connected()
     
     return jsonify({
         'success': True,
-        'status': 'healthy' if (mongo_ok and mqtt_ok) else 'degraded',
+        'status': 'healthy' if mongo_ok else 'degraded',
         'mongodb': 'connected' if mongo_ok else 'disconnected',
-        'mqtt': 'connected' if mqtt_ok else 'disconnected'
+        'architecture': 'deep-sleep-http-pull',
+        'mqtt': 'removed'  # 明确标注MQTT已移除
     })
 
 # ==================== 启动服务器 ====================
@@ -1431,11 +1289,11 @@ def health_check():
 def init_app():
     """初始化应用"""
     print('\n🚀 Starting ESP32 E-Paper Cloud Server...')
-    print(f'📡 MQTT Broker: {Config.MQTT_BROKER}:{Config.MQTT_PORT}')
-    print(f'💾 MongoDB: {Config.MONGODB_URI}/{Config.MONGODB_DB}\n')
+    print('📡 Architecture: Deep-sleep + HTTP Pull (No MQTT)')
+    print(f'💾 MongoDB: {Config.MONGODB_URI}/{Config.MONGODB_DB}')
+    print(f'📁 Image Storage: {DATA_DIR}\n')
     
     connect_mongodb()
-    connect_mqtt()
 
 # 初始化
 init_app()

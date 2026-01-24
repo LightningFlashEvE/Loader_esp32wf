@@ -9,12 +9,19 @@ services:
       - "5000:5000"
     environment:
       - PORT=5000
-      - MQTT_BROKER=8.135.238.216
-      - MQTT_PORT=1883
-      - MQTT_USER=admin
-      - MQTT_PASS=admin
+      # Deep-sleep + HTTP Pull 架构：不再需要 MQTT 相关环境变量
+      # - MQTT_BROKER=...
+      # - MQTT_PORT=...
+      # - MQTT_USER=...
+      # - MQTT_PASS=...
       - MONGODB_URI=mongodb://mongo_miXkxe:mongo_NQf5WW@8.135.238.216:27017/esp32_epd?authSource=admin
       - MONGODB_DB=esp32_epd
+      # 用于 status 返回 imageUrl 的 host/port（建议填公网域名或公网IP）
+      - FLASK_HOST=8.135.238.216
+      - FLASK_PORT=5000
+    volumes:
+      # 持久化保存最新图片：data/epd/<deviceId>/latest.txt
+      - ./backend/data:/app/data
     restart: unless-stopped
     networks:
       - esp32-network

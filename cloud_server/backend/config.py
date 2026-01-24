@@ -1,7 +1,10 @@
 import os
 
 class Config:
-    """Flask 配置"""
+    """Flask 配置
+    
+    Deep-sleep + HTTP Pull 架构（无MQTT）
+    """
     
     # Flask
     SECRET_KEY = os.environ.get('SECRET_KEY', 'esp32-epd-secret-key')
@@ -11,12 +14,9 @@ class Config:
     MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://mongo_miXkxe:mongo_NQf5WW@8.135.238.216:27017/esp32_epd?authSource=admin')
     MONGODB_DB = os.environ.get('MONGODB_DB', 'esp32_epd')
     
-    # MQTT
-    MQTT_BROKER = os.environ.get('MQTT_BROKER', '8.135.238.216')
-    MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
-    MQTT_USER = os.environ.get('MQTT_USER', 'admin')
-    MQTT_PASS = os.environ.get('MQTT_PASS', 'admin')
-    
     # Flask (用于构建下载URL)
-    FLASK_HOST = os.environ.get('FLASK_HOST', MQTT_BROKER)  # 默认与MQTT broker相同
+    FLASK_HOST = os.environ.get('FLASK_HOST', '8.135.238.216')
     FLASK_PORT = int(os.environ.get('FLASK_PORT', 5000))
+    
+    # 注意：MQTT配置已移除，本架构使用HTTP拉取模式
+    # 设备通过HTTP轮询获取更新，不需要MQTT常连接

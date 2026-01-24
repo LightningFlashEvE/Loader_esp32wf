@@ -109,9 +109,12 @@ def connect_mongodb():
 
         pages_collection.create_index('deviceId')
         pages_collection.create_index([('deviceId', 1), ('name', 1)])
+        # 列表页按 updatedAt 排序：需要索引避免全表扫描（数据大时会非常慢）
+        pages_collection.create_index([('deviceId', 1), ('updatedAt', -1)])
 
         page_lists_collection.create_index('deviceId')
         page_lists_collection.create_index([('deviceId', 1), ('isActive', 1)])
+        page_lists_collection.create_index([('deviceId', 1), ('updatedAt', -1)])
         
         pairing_codes_collection.create_index('deviceId', unique=True)
         pairing_codes_collection.create_index('expiresAt', expireAfterSeconds=0)
@@ -695,11 +698,36 @@ def get_pages(device_id):
 
         if pages_collection is None:
             return jsonify({'success': True, 'pages': []})
-        
+
+        # 兼容历史数据：deviceId 可能未规范化写入（带分隔符/小写等）
+        candidates = list({
+            (device_id or '').strip(),
+            (device_id or '').strip().upper(),
+            normalize_device_id(device_id),
+        })
+        candidates = [c for c in candidates if c]
+
+        # 列表接口仅返回轻量字段，避免把 data.imageData（base64）整包带回导致前端卡顿/不显示
+        limit = request.args.get('limit', '200')
+        try:
+            limit = int(limit)
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 500))
+
         pages = list(pages_collection.find(
-            {'deviceId': clean_id},
-            {'_id': 0}
-        ).sort('updatedAt', -1))
+            {'deviceId': {'$in': candidates}},
+            {
+                '_id': 0,
+                'pageId': 1,
+                'deviceId': 1,
+                'name': 1,
+                'type': 1,
+                'thumbnail': 1,
+                'createdAt': 1,
+                'updatedAt': 1
+            }
+        ).sort('updatedAt', -1).limit(limit))
         
         for page in pages:
             if hasattr(page.get('createdAt'), 'isoformat'):
@@ -852,11 +880,26 @@ def get_page_lists(device_id):
 
         if page_lists_collection is None:
             return jsonify({'success': True, 'pageLists': []})
-        
+
+        # 兼容历史数据：deviceId 可能未规范化写入
+        candidates = list({
+            (device_id or '').strip(),
+            (device_id or '').strip().upper(),
+            normalize_device_id(device_id),
+        })
+        candidates = [c for c in candidates if c]
+
+        limit = request.args.get('limit', '200')
+        try:
+            limit = int(limit)
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 500))
+
         page_lists = list(page_lists_collection.find(
-            {'deviceId': clean_id},
+            {'deviceId': {'$in': candidates}},
             {'_id': 0}
-        ).sort('updatedAt', -1))
+        ).sort('updatedAt', -1).limit(limit))
         
         for pl in page_lists:
             if hasattr(pl.get('createdAt'), 'isoformat'):

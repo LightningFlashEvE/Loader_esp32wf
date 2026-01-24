@@ -13,6 +13,7 @@ var pages = [];
 var pageLists = [];
 var templates = [];
 var currentPageId = null;
+var currentTemplateId = null;
 
 // 注意：以下变量在 app.js 中已定义，这里不再声明
 // currentMode, sourceImage, textItems, mixedTextItems, 
@@ -111,35 +112,10 @@ function selectTemplate(templateId) {
 }
 
 function applyTemplate(template) {
-    // 根据模板类型渲染不同内容
-    const canvas = document.getElementById('mainCanvas');
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    
-    // 清空画布
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, width, height);
-    
-    switch (template.templateId) {
-        case 'clock':
-            renderClockTemplate(ctx, width, height);
-            break;
-        case 'calendar':
-            renderCalendarTemplate(ctx, width, height);
-            break;
-        case 'quote':
-            renderQuoteTemplate(ctx, width, height);
-            break;
-        case 'qrcode':
-            renderQRCodeTemplate(ctx, width, height);
-            break;
-        case 'blank':
-        default:
-            // 空白画布，不做任何事
-            break;
-    }
-    
+    // 统一用 renderCanvas 渲染，避免“加载模板页面后白屏/不显示”
+    currentMode = 'template';
+    currentTemplateId = template.templateId;
+    renderCanvas();
     log(`已应用模板: ${template.name}`, 'success');
 }
 
@@ -257,7 +233,8 @@ async function loadPages() {
     if (!deviceId) return;
     
     try {
-        const response = await fetch(`${API_BASE}/api/pages/list/${deviceId}`, {
+        // 限制列表数量，避免历史数据过多时卡顿
+        const response = await fetch(`${API_BASE}/api/pages/list/${deviceId}?limit=200`, {
             headers: typeof getAuthHeaders === 'function' ? getAuthHeaders() : {}
         });
         const result = await response.json();
@@ -351,9 +328,25 @@ function loadPageToCanvas(page) {
     
     // 切换到对应模式
     if (page.type && page.type !== currentMode) {
-        switchMode(page.type);
+        // app.js 的 switchMode 仅支持 image/text/mixed；模板模式在 editor.js 内渲染
+        if (page.type === 'template') {
+            currentMode = 'template';
+        } else {
+            switchMode(page.type);
+        }
     }
     
+    // 模板页面：根据 data.template 渲染（否则会被 renderCanvas 清空导致白屏）
+    if ((page.type === 'template' || currentMode === 'template') && data.template) {
+        currentTemplateId = data.template;
+        // 模板页默认不加载图片/文字叠加
+        sourceImage = null;
+        textItems = [];
+        mixedTextItems = [];
+        renderCanvas();
+        return;
+    }
+
     // 加载图片数据到画布
     if (data.imageData) {
         // 加载图片数据
@@ -391,15 +384,27 @@ async function savePage() {
     // 获取画布缩略图和完整画布数据
     const canvas = document.getElementById('mainCanvas');
     const thumbnail = canvas.toDataURL('image/jpeg', 0.5);
-    const imageDataUrl = canvas.toDataURL('image/png');
     
-    // 收集页面数据（同时保存图片和文字，方便后续加载）
-    const pageData = {
-        mode: currentMode,
-        imageData: imageDataUrl,
-        textItems: textItems || [],
-        mixedTextItems: mixedTextItems || []
-    };
+    // 收集页面数据
+    // - 非模板：保存 imageData（base64）+ 文字叠加
+    // - 模板：只保存 templateId（避免大 base64 导致“保存很慢/请求很大”）
+    let pageData;
+    if (currentMode === 'template') {
+        pageData = {
+            mode: currentMode,
+            template: currentTemplateId || null
+        };
+    } else {
+        // PNG base64 体积很大（800x480也可能上 MB），会导致“保存半天/加载很慢”
+        // 这里改用 JPEG（有损但足够编辑预览），显著减小体积
+        const imageDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        pageData = {
+            mode: currentMode,
+            imageData: imageDataUrl,
+            textItems: textItems || [],
+            mixedTextItems: mixedTextItems || []
+        };
+    }
     
     const pageName = currentPageId ? 
         (pages.find(p => p.pageId === currentPageId)?.name || '未命名页面') :
@@ -408,6 +413,7 @@ async function savePage() {
     if (!pageName) return;
     
     try {
+        log('正在保存页面...', 'info');
         const response = await fetch(`${API_BASE}/api/pages/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(typeof getAuthHeaders === 'function' ? getAuthHeaders() : {}) },
@@ -438,6 +444,11 @@ async function deletePage(pageId) {
     if (!confirm('确定要删除这个页面吗？')) return;
     
     try {
+        // 先本地移除，提升交互体验（避免必须刷新才消失）
+        pages = (pages || []).filter(p => p.pageId !== pageId);
+        if (currentPageId === pageId) currentPageId = null;
+        renderPageList();
+
         const response = await fetch(`${API_BASE}/api/pages/${pageId}`, {
             method: 'DELETE',
             headers: typeof getAuthHeaders === 'function' ? getAuthHeaders() : {}
@@ -445,13 +456,16 @@ async function deletePage(pageId) {
         
         const result = await response.json();
         if (result.success) {
-            if (currentPageId === pageId) {
-                currentPageId = null;
-            }
             await loadPages();
             log('页面已删除', 'success');
+        } else {
+            // 删除失败则回滚刷新
+            await loadPages();
+            log('删除失败: ' + (result.error || 'unknown'), 'error');
         }
     } catch (e) {
+        // 出错也刷新一次，确保 UI 一致
+        await loadPages();
         log('删除失败', 'error');
     }
 }
@@ -461,15 +475,26 @@ async function duplicatePage(pageId) {
     if (!page) return;
     
     try {
+        // 列表接口已做轻量化（不再返回 page.data），复制前先拉取完整页面
+        const detailResp = await fetch(`${API_BASE}/api/pages/${pageId}`, {
+            headers: typeof getAuthHeaders === 'function' ? getAuthHeaders() : {}
+        });
+        const detail = await detailResp.json();
+        if (!detail.success) {
+            log('复制失败: 无法获取页面详情', 'error');
+            return;
+        }
+        const src = detail.page;
+
         const response = await fetch(`${API_BASE}/api/pages/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(typeof getAuthHeaders === 'function' ? getAuthHeaders() : {}) },
             body: JSON.stringify({
                 deviceId,
-                name: page.name + ' (副本)',
-                type: page.type,
-                data: page.data,
-                thumbnail: page.thumbnail
+                name: (src.name || page.name || '未命名页面') + ' (副本)',
+                type: src.type || page.type,
+                data: src.data || {},
+                thumbnail: src.thumbnail || page.thumbnail || ''
             })
         });
         
@@ -1284,6 +1309,38 @@ function renderCanvas() {
                 ctx.setLineDash([]);
             }
         });
+    } else if (currentMode === 'template') {
+        renderTemplateCanvas(ctx, canvas.width, canvas.height);
+    }
+}
+
+function renderTemplateCanvas(ctx, width, height) {
+    // 清空画布
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, width, height);
+
+    const templateId = currentTemplateId;
+    if (!templateId) {
+        // 未选择模板，保持空白
+        return;
+    }
+
+    switch (templateId) {
+        case 'clock':
+            renderClockTemplate(ctx, width, height);
+            break;
+        case 'calendar':
+            renderCalendarTemplate(ctx, width, height);
+            break;
+        case 'quote':
+            renderQuoteTemplate(ctx, width, height);
+            break;
+        case 'qrcode':
+            renderQRCodeTemplate(ctx, width, height);
+            break;
+        case 'blank':
+        default:
+            break;
     }
 }
 

@@ -24,6 +24,47 @@
 Preferences preferences;  // NVS持久化存储（供wifi_config和http_update共享）
 bool wifiConfigured = false;  // WiFi配网状态标志
 
+/* ------------------------ 用户自定义：长按进入配网 ------------------------ */
+#define WIFI_RECONFIG_HOLD_MS 3000  // 长按GPIO0进入"清除WiFi并AP配网"的阈值（ms）
+
+/**
+ * 判断是否为正常唤醒原因（按键/定时器/GPIO等）
+ */
+static bool isNormalWakeCause(esp_sleep_wakeup_cause_t cause) {
+  return (cause == ESP_SLEEP_WAKEUP_TIMER ||
+          cause == ESP_SLEEP_WAKEUP_GPIO ||
+          cause == ESP_SLEEP_WAKEUP_EXT0 ||
+          cause == ESP_SLEEP_WAKEUP_EXT1);
+}
+
+/**
+ * 检测 GPIO0 是否被持续按住（低电平）达到指定时长
+ * 注意：GPIO0 在本项目作为唤醒键（低电平），这里复用它作为"长按配网"入口。
+ * 使用 http_update.h 中定义的 WAKEUP_GPIO (GPIO_NUM_0)
+ */
+static bool isWakeKeyHeldLow(uint32_t holdMs) {
+  // WAKEUP_GPIO 在 http_update.h 中已定义为 GPIO_NUM_0
+  const gpio_num_t wakeupPin = WAKEUP_GPIO;
+  
+  pinMode((int)wakeupPin, INPUT_PULLUP);
+  gpio_pullup_en(wakeupPin);
+  gpio_pulldown_dis(wakeupPin);
+
+  // 必须从一开始就是低电平才算"按住"
+  if (gpio_get_level(wakeupPin) != 0) {
+    return false;
+  }
+
+  uint32_t start = millis();
+  while ((millis() - start) < holdMs) {
+    if (gpio_get_level(wakeupPin) != 0) {
+      return false;  // 中途松开
+    }
+    delay(10);
+  }
+  return true;  // 全程按住
+}
+
 /* Entry point ----------------------------------------------------------------*/
 void setup() 
 {
@@ -46,6 +87,35 @@ void setup()
     Serial.println("========================================");
     Serial.printf("  剩余内存: %d 字节\n", ESP.getFreeHeap());
     Serial.println("========================================\n");
+
+    // 读取唤醒原因
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    Serial.printf("⏰ wakeup cause = %d\n", (int)cause);
+
+    // 先读一次"是否已配网"（不改变现有逻辑，仅用于门控）
+    bool alreadyConfigured = checkWiFiConfigured();
+
+    // 1) 长按 GPIO0 进入"清除WiFi + AP配网"
+    //    - 适用于：从 deep-sleep 按键唤醒后继续按住不放
+    //    - 也适用于：上电/复位后按住 GPIO0（若硬件允许）
+    if (isWakeKeyHeldLow(WIFI_RECONFIG_HOLD_MS)) {
+        Serial.println("🧹 检测到长按GPIO0：清除WiFi配置并进入AP配网模式");
+        clearWiFiConfig();       // 清除NVS WiFi信息
+        startAPMode();           // 启动AP
+        initConfigServer();      // 启动Web配网服务器
+        wifiConfigured = false;
+        Serial.println("⏳ 等待配网中...（AP模式）");
+        return;  // AP模式下不进入Deep-sleep
+    }
+
+    // 2) 只保留"GPIO0唤醒/定时唤醒"作为正常工作触发
+    //    - 如果是复位/上电等"非正常唤醒"，且已经配过网：直接回睡，不再触发联网更新
+    //    - 如果未配网：允许继续走配网流程（否则永远没法配网）
+    if (!isNormalWakeCause(cause) && alreadyConfigured) {
+        Serial.println("🛑 非按键/非定时唤醒（复位/上电等），且已配网：直接回到Deep-sleep");
+        enterDeepSleep();  // 配置唤醒源并入睡（GPIO0+定时器）
+        return;
+    }
     
     // WiFi配网初始化
     Serial.println("📶 WiFi配网初始化...");
